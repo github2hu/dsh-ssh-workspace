@@ -128,14 +128,20 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
   // workspace registration AND this plugin's disabled mark, so no row and no
   // runtime fence survives it. Both locales must carry every label, or one
   // language renders a blank button.
-  for (const key of ['detached.purge', 'detached.purging', 'detached.confirmPurge', 'detached.purgeHint', 'detached.purgeOk', 'detached.purgeFail']) {
+  for (const key of ['detached.purge', 'detached.purging', 'detached.confirmPurge', 'detached.purgeTitle', 'detached.purgeHint', 'detached.purgeOk', 'detached.purgeFail']) {
     const occurrences = (client.match(new RegExp(`'${key.replaceAll('.', '\\.')}':`, 'g')) ?? []).length
     check(`${key} is translated in both dictionaries`, occurrences === 2, `found ${occurrences}`)
   }
   check('the action posts forget mode and leaves archiving alone',
     /mode: 'forget', archiveSessions: false/.test(client))
-  check('arming is per row and reversible',
-    /setPurgeConfirm\(wsPath\)/.test(client) && /setPurgeConfirm\(null\)/.test(client))
+  check('the row button opens a confirmation dialog instead of acting',
+    /onClick: \(\) => setPurgeTarget\(wsPath\)/.test(client) &&
+      /onClick: \(\) => handlePurge\(purgeTarget\)/.test(client))
+  check('the dialog can be dismissed without deleting',
+    /if \(purgeBusy === null\) setPurgeTarget\(null\)/.test(client) &&
+      /onClick: \(\) => setPurgeTarget\(null\)/.test(client))
+  check('the dialog reuses the shared backdrop/dialog styles',
+    /sshwsp-backdrop/.test(client) && /sshwsp-dialog sshwsp-dialog-narrow/.test(client))
   check('the destructive button reuses the shared danger style',
     /sshwsp-btn sshwsp-btn-danger/.test(client))
 }
