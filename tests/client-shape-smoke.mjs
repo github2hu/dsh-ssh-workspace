@@ -146,6 +146,22 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
     /sshwsp-btn sshwsp-btn-danger/.test(client))
 }
 
+console.log('\n[mounted workspace: unmount dialog]')
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  const occurrences = (client.match(/'mounted\.unmountTitle':/g) ?? []).length
+  check('mounted.unmountTitle is translated in both dictionaries', occurrences === 2, `found ${occurrences}`)
+  check('the row button opens the dialog instead of unloading',
+    /onClick: \(\) => \{ setUnmountTarget\(wsPath\); setUnmountMode\('detach'\) \}/.test(client))
+  check('the dialog confirm runs the unload with the chosen mode',
+    /onClick: \(\) => handleUnmount\(unmountTarget, unmountMode\)/.test(client))
+  check('the record checkbox stays in the dialog and drives the mode',
+    /checked: unmountMode === 'deregister'/.test(client) &&
+      /setUnmountMode\(event\.target\.checked \? 'deregister' : 'detach'\)/.test(client))
+  check('dismissing the dialog leaves the row mounted and resets the mode',
+    /setUnmountTarget\(null\); setUnmountMode\('detach'\)/.test(client))
+}
+
 console.log('\n[publish whitelist]')
 const files = pkg.files ?? []
 check('lib/ ships in the tarball', files.includes('lib/'), JSON.stringify(files))
