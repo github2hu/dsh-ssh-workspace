@@ -2,6 +2,21 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.3.1]
+
+### 新功能
+
+- **侧栏 git 可读取远端仓库**（`lib/patch-child-process.js`）：侧栏源码管理面板
+  （`dsh-better-sidebar`）用 `spawn("git", ["-C", cwd, …])` / `execFile("git", …)` 读取仓库状态，
+  `cwd` 为 `ssh://` 时本地 git 必然失败。现在接管宿主进程的 `node:child_process`：
+  目标为远端时改在远端执行，并用 ChildProcess 形状的对象回放结果（`stdout`/`stderr` 流、
+  `error`、`close`、`kill`），`execFile` 回调形态同样处理。只桥接 `git`；本地调用与其他命令
+  原样转发。环境只透传 `GIT_*`/`LC_*`/`LANG` 并强制 `GIT_TERMINAL_PROMPT=0`。
+- **破坏性 git 命令被拒绝**：`push --force`/`-f`/`--mirror`、`reset --hard`、`clean -f`、
+  `branch -D`、`update-ref`、`reflog expire`、`gc --prune`、`filter-branch`。
+  侧栏按钮没有确认界面，这类命令需要在远端终端里执行。
+- 新增 `tests/child-process-smoke.mjs`（34 项断言）。
+
 ## [0.3.0] — fork 首版
 
 本版是 [`siqyka/dsh-ssh-workspace`](https://github.com/siqyka/dsh-ssh-workspace) 0.2.3 的

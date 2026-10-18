@@ -43,6 +43,7 @@ const SUITES = [
   'protocol',
   'remote-skills',
   'ptc-local',
+  'child-process',
   'client-shape',
   'tree-transfer',
   'insert-once',

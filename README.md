@@ -192,6 +192,25 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 `persistent-in-memory`，保留的 REPL 会在每次执行时 `chdir` 到 `ssh://` 路径而失败；
 需要持久 REPL 时请改用本地工作区。
 
+## fork 新增：侧栏 git 读取远端仓库
+
+侧栏的源码管理面板（`dsh-better-sidebar` 的 Git / 变更页签）通过
+`spawn("git", ["-C", cwd, …])` 读取仓库状态。工作区是 `ssh://` 时这个本地 spawn 必然失败，
+面板只能显示「当前目录不是 git 仓库」。
+
+本 fork 接管宿主进程里的 `node:child_process`：**`-C` 目标是 `ssh://` 的 git 调用改在远端执行**，
+输出通过一个 ChildProcess 形状的对象回放（`stdout`/`stderr` 流、`error`、`close`、`kill`），
+`execFile` 的回调形态同样处理。于是状态、分支、日志、历史图、diff、blame 都能读远端仓库；
+本地工作区的 git 调用原样转发，行为不变。
+
+- 只桥接 `git`，其他命令一律走原路径；
+- 环境只转发 `GIT_*` / `LC_*` / `LANG`（并强制 `GIT_TERMINAL_PROMPT=0`），不会把宿主其他环境变量带进远端；
+- push / pull 使用**远端主机自己的凭证**（`~/.ssh`、credential helper），插件不保存任何凭据；
+- **破坏性命令会被拒绝**：`push --force` / `-f` / `--mirror`、`reset --hard`、`clean -f`、
+  `branch -D`、`update-ref`、`reflog expire`、`gc --prune`、`filter-branch` 等。
+  侧栏按钮没有确认框，一键改写历史的风险不值得承担——需要时请在远端终端
+  （侧栏终端或 `ssh_workspace_shell`）里执行。
+
 ## 主机管理
 
 主机记录存放在 `$DSH_HOME/dsh-ssh.json`；没有该文件时，会退回到读取
