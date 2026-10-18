@@ -1,15 +1,15 @@
 {
-  "name": "@shiqyka/dsh-ssh-workspace",
-  "version": "0.2.3",
-  "description": "Remote SSH workspaces for DSH: mount a directory on an SSH host as a DSH workspace with browser UI sidebar panel",
+  "name": "@github2hu/dsh-ssh-workspace",
+  "version": "0.3.0",
+  "description": "Remote SSH workspaces for DSH: mount a directory on an SSH host as a DSH workspace with browser UI sidebar panel, plus remote-workspace skills and run_code support",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/siqyka/dsh-ssh-workspace.git"
+    "url": "git+https://github.com/github2hu/dsh-ssh-workspace.git"
   },
-  "homepage": "https://github.com/siqyka/dsh-ssh-workspace#readme",
+  "homepage": "https://github.com/github2hu/dsh-ssh-workspace#readme",
   "bugs": {
-    "url": "https://github.com/siqyka/dsh-ssh-workspace/issues"
+    "url": "https://github.com/github2hu/dsh-ssh-workspace/issues"
   },
   "engines": {
     "node": ">=20"
@@ -70,5 +70,8 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
-  }
+  },
+  "contributors": [
+    "github2hu"
+  ]
 }
