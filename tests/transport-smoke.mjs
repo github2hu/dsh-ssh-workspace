@@ -189,6 +189,28 @@ function quietEngine () {
     typeof result.error === 'string' && result.error.includes('inline'), JSON.stringify(result.error))
 }
 
+// --- socket tuning: the per-command latency floor --------------------------
+// Every `exec` and every SFTP request pays one round trip on the pooled socket.
+// With Nagle on, that round trip waited out the delayed-ACK window (88 ms on a
+// LAN with sub-millisecond ping); these checks pin the tuning contract.
+{
+  const { tuneConnectionSocket } = await import(pathToFileURL(path.join(pluginRoot, 'lib/engine.js')).href)
+
+  const calls = []
+  const sock = {
+    setNoDelay: (value) => { calls.push(['noDelay', value]) },
+    setKeepAlive: (value, ms) => { calls.push(['keepAlive', value, ms]) },
+  }
+  check('tuning disables Nagle on the connection socket', tuneConnectionSocket(sock) === true && calls[0]?.[0] === 'noDelay' && calls[0][1] === true, JSON.stringify(calls))
+  check('tuning enables TCP keepalive', calls[1]?.[0] === 'keepAlive' && calls[1][1] === true && calls[1][2] === 10_000, JSON.stringify(calls))
+  check('an absent socket is skipped, not an error', tuneConnectionSocket(undefined) === false && tuneConnectionSocket(null) === false)
+  check('a socket that refuses keepalive still gets Nagle disabled',
+    tuneConnectionSocket({ setNoDelay: () => { throw new Error('nope') } }) === false)
+  let disabled = 0
+  check('a socket without optional methods is tolerated',
+    tuneConnectionSocket({ setNoDelay: () => { disabled += 1 } }) === true && disabled === 1)
+}
+
 let exitCode = 0
 console.log(`\n=== ${passed} passed, ${failures} failed ===`)
 if (failures > 0) exitCode = 1

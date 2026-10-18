@@ -2,6 +2,25 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.3.4]
+
+### 性能
+
+- **关掉连接 socket 上的 Nagle**（`tuneConnectionSocket`）：ssh2 每个请求都是一小段
+  TCP 包，Nagle 开着时每次调用都要等对端的 delayed-ACK 窗口两个来回。在同一台 LAN
+  主机上实测（ping < 1 ms）：
+
+  | 指标 | 之前 | 之后 |
+  |---|---|---|
+  | 一次 `exec`（`true`） | 88 ms | **3 ms** |
+  | `git status --porcelain=v2 --branch -z` | 89 ms | **6 ms** |
+  | 冷连接握手 | 458 ms | **142 ms** |
+
+  这影响所有走引擎的路径：远端 git 桥（源控 / 变更面板）、SFTP 的 stat/列举/读取
+  （文件树、diff、目录传输）、远端命令。命令本身不再是瓶颈。
+- 同时打开 TCP keepalive（10 s），闲置连接的死链更早暴露；socket 是 ssh2 的内部
+  句柄，取不到或调用失败时安静跳过，不影响连接。
+
 ## [0.3.3]
 
 ### 新功能
