@@ -16,6 +16,9 @@
   `branch -D`、`update-ref`、`reflog expire`、`gc --prune`、`filter-branch`。
   侧栏按钮没有确认界面，这类命令需要在远端终端里执行。
 - 新增 `tests/child-process-smoke.mjs`（34 项断言）。
+- 新增只读诊断路由 `GET /api/dsh-ssh-workspace/diagnostics`：返回 git 桥是否安装，
+  以及最近 32 次被接管的调用（别名、远端 cwd、argv、退出码）。用于区分
+  「侧栏没发出请求」与「桥接没生效」。
 
 ## [0.3.0] — fork 首版
 
