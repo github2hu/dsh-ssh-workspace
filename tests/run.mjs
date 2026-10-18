@@ -41,6 +41,8 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 /** Suite order: pure checks first, live-host suites last. */
 const SUITES = [
   'protocol',
+  'remote-skills',
+  'ptc-local',
   'client-shape',
   'tree-transfer',
   'insert-once',
