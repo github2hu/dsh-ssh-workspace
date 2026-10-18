@@ -5,8 +5,13 @@
 # The row is a bare plugin by package name: it runs in the host process, takes
 # over the live `ctx.fs` so it also serves `ssh://<alias>/<path>` targets over
 # SFTP, and registers the remote-workspace agent tools.
+#
+# The row id is deliberately distinct from the upstream package's `ssh-workspace`
+# row: a profile that still carries an upstream `- id: ssh-workspace` patch entry
+# (the enable/disable choice written by a plugin manager) would otherwise
+# silently override this fork's row.
 - insert:
-    - id: ssh-workspace
+    - id: ssh-workspace-fork
       name: '@github2hu/dsh-ssh-workspace'
       config:
         announceToAgent: true
