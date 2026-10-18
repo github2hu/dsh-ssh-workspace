@@ -2,6 +2,36 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.3.0] — fork 首版
+
+本版是 [`siqyka/dsh-ssh-workspace`](https://github.com/siqyka/dsh-ssh-workspace) 0.2.3 的
+fork，由 github2hu 维护，补齐两项在远端工作区里缺失的能力。
+
+### 新功能
+
+- **远端项目技能**（`lib/remote-skills.js`）：通过 `ctx.skills.registerProvider()` 注册
+  名为 `ssh-workspace` 的技能提供者，经已打补丁的 `ctx.fs` 在远端发现并加载
+  `<工作区>/.dsh/skills`、`<工作区>/.agents/skills` 下的技能（目录包与扁平 `.md` 两种形态）。
+  项目根取最近的含 `.git` 祖先；只扫一层；正文每次加载重读；目录变化用 `ctx.fs.watch`
+  感知（远端 inotifywait 或轮询），因此新增 / 改名 / 删除技能无需重启。
+  远端项目技能 rank 为 90 / 190，高于本机用户级技能，与 `dsh-skills-manager` 等
+  提供者按 rank 合并。可用 `skills.enabled` / `skills.watch` 关闭。
+- **`run_code`（PTC）在远端工作区可用**（`lib/ptc-local.js`、`lib/patch-sandbox.js`、
+  `lib/patch-subprocess.js`）：上游的远端 subprocess 桥只允许 `git` / `rg`，PTC 的 Node
+  子进程因此被同步拒绝，模型只能报「无法读取文件」。现在把该子进程（以
+  `stdio.control === 'pipe'` + Node 形态识别）放到本机私有临时目录运行，并同步把
+  `ctx.sandbox` 的围栏根换成同一目录；程序通过 PTC 绑定调用 read / write / edit /
+  glob / grep 访问远端文件，子进程环境带 `DSH_REMOTE_PTC_WORKSPACE`。
+  仅支持 `executionMode: per-call`；`persistent-in-memory` 的 REPL 会因 `chdir` 到
+  `ssh://` 而失败。
+- 系统提示词段落补充上述两项能力与用法约束。
+
+### 变更
+
+- 包名改为 `@github2hu/dsh-ssh-workspace`；loader 行 id 改为 `ssh-workspace-fork`
+  （避免与上游的 `- id: ssh-workspace` 补丁条目互相覆盖）。
+- 新增两个 smoke 套件：`tests/remote-skills-smoke.mjs`、`tests/ptc-local-smoke.mjs`。
+
 ## [未发布]
 
 ### 新功能

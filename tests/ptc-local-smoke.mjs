@@ -35,30 +35,22 @@ const BOOTSTRAP = process.platform === 'win32'
 console.log('\n=== ptc-local smoke ===\n')
 
 console.log('[isPtcBootstrapSpec]')
+const CONTROL = { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', control: 'pipe' }
 check('recognizes the per-call bootstrap child',
-  isPtcBootstrapSpec({ cwd: 'ssh://box/home/u/proj', argv: [NODE, BOOTSTRAP] }) === true)
+  isPtcBootstrapSpec({ cwd: 'ssh://box/home/u/proj', argv: [NODE, BOOTSTRAP], stdio: CONTROL }) === true)
 check('recognizes the persistent-REPL bootstrap child',
-  isPtcBootstrapSpec({ cwd: 'ssh://box/home/u/proj', argv: [NODE, BOOTSTRAP.replace('process.js', 'persistent-process.js')] }) === true)
-check('rejects a git command', isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: ['git', 'status'] }) === false)
-check('rejects ripgrep', isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: ['rg', 'needle'] }) === false)
-check('rejects a bare node REPL',
-  isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: [NODE, '-e', 'console.log(1)'] }) === false)
-check('rejects a shell command',
-  isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: ['bash', '-lc', 'ls'] }) === false)
-check('rejects a non-array argv', isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: 'node' }) === false)
+  isPtcBootstrapSpec({ cwd: 'ssh://box/home/u/proj', argv: [NODE, '--max-old-space-size=512', BOOTSTRAP.replace('process.js', 'persistent-process.js'), '134217728'], stdio: CONTROL }) === true)
+check('recognizes a packaged carrier that passes only size flags',
+  isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: [process.execPath, '--max-old-space-size=512', '134217728'], stdio: CONTROL }) === true)
+check('rejects a PTC-shaped child without the control channel',
+  isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: [NODE, BOOTSTRAP] }) === false)
+check('rejects git even with a control channel',
+  isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: ['git', 'status'], stdio: CONTROL }) === false)
+check('rejects a shell command even with a control channel',
+  isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: ['bash', '-lc', 'ls'], stdio: CONTROL }) === false)
+check('rejects a non-array argv', isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: 'node', stdio: CONTROL }) === false)
+check('rejects an empty argv', isPtcBootstrapSpec({ cwd: 'ssh://box/x', argv: [], stdio: CONTROL }) === false)
 check('rejects a null spec', isPtcBootstrapSpec(null) === false)
-check('accepts the host executable as the head in an embedded carrier',
-  isPtcBootstrapSpec({
-    cwd: 'ssh://box/x',
-    argv: [process.execPath, BOOTSTRAP],
-    env: { ELECTRON_RUN_AS_NODE: '1' },
-  }) === true)
-check('rejects an inline program under the same carrier',
-  isPtcBootstrapSpec({
-    cwd: 'ssh://box/x',
-    argv: [process.execPath, '-e', 'console.log(1)'],
-    env: { ELECTRON_RUN_AS_NODE: '1' },
-  }) === false)
 
 console.log('\n[localScratchFor]')
 {

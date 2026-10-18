@@ -8,8 +8,8 @@
 `read` / `write` / `edit` 通过 SFTP 直接读写远端文件——
 不需要手动同步、不需要挂载驱动、不需要装任何第三方文件系统。
 
-[![version](https://img.shields.io/github/package-json/v/siqyka/dsh-ssh-workspace)](https://github.com/siqyka/dsh-ssh-workspace)
-[![license](https://img.shields.io/github/license/siqyka/dsh-ssh-workspace)](./LICENSE)
+[![version](https://img.shields.io/github/package-json/v/github2hu/dsh-ssh-workspace)](https://github.com/github2hu/dsh-ssh-workspace)
+[![license](https://img.shields.io/github/license/github2hu/dsh-ssh-workspace)](./LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D%2020-brightgreen)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D%200.2.0--rc.1-blue)
 ![ssh2](https://img.shields.io/badge/ssh2-%5E1.17.0-lightgrey)
@@ -19,6 +19,20 @@
 </div>
 
 ---
+
+> **这是 [`siqyka/dsh-ssh-workspace`](https://github.com/siqyka/dsh-ssh-workspace) 的 fork**，
+> 由 [github2hu](https://github.com/github2hu) 维护。原始代码与文档版权归 siqyka 所有，
+> 依 MIT 许可继续分发。
+>
+> 与上游的差别（0.3.0）：
+> 1. **远端工作区的项目技能可直接使用**——`<工作区>/.dsh/skills` 与
+>    `<工作区>/.agents/skills` 由本插件自己发现并注册进会话技能目录；
+> 2. **`run_code`（PTC 模式）在远端工作区可用**——之前它会被子进程白名单直接拒绝；
+> 3. 安装包名改为 `@github2hu/dsh-ssh-workspace`，loader 行 id 改为
+>    `ssh-workspace-fork`，可与上游版本并存安装而不互相覆盖配置。
+>
+> 上游仍是主要功能来源：`git remote add upstream https://github.com/siqyka/dsh-ssh-workspace`
+> 后 `git fetch upstream && git merge upstream/main` 即可同步。
 
 <table>
 <tr>
@@ -99,14 +113,21 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 ## 快速开始
 
 1. **安装**：打开官方桌面客户端，进入「设置」中的「插件」页面（或左侧导航栏的插件入口）；
-2. **输入来源**：在插件管理界面的安装输入框中二选一，点击安装：
-   - **npm 包**（走 npm 分发，支持锁定版本）：
-     `@shiqyka/dsh-ssh-workspace`，或指定版本
-     `@shiqyka/dsh-ssh-workspace@0.1.24`
-     （[npm 页面](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace)）；
-   - **仓库地址**（从 Git 取最新代码）：
-     `https://github.com/siqyka/dsh-ssh-workspace`
-3. **重启**：安装完成后重启客户端，即可开始使用。
+2. **输入来源**：本 fork 尚未发布到 npm，目前用**本地目录**安装：
+
+   ```text
+   D:\Workspace\Deepseek Harness\Plugins\dsh-ssh-workspace
+   ```
+
+   插件管理器会以 `link:` 方式接入 profile（`node_modules` 里是指向该目录的联接），
+   之后修改仓库里的 `lib/*.js` 会直接生效，无需重新安装。
+   也可以在插件市场的输入框里粘贴本仓库地址：
+   `https://github.com/github2hu/dsh-ssh-workspace`。
+3. **与上游版本的关系**：本 fork 的 loader 行 id 是 `ssh-workspace-fork`，上游是
+   `ssh-workspace`，两者可以同时安装；但**不要同时启用**——两个实例都会接管
+   `ctx.fs`/`ctx.subprocess`，只有先挂载的那个生效。建议在插件市场里把上游
+   `@shiqyka/dsh-ssh-workspace` 关掉，只留本 fork。
+4. **重启**：安装完成后重启客户端，即可开始使用。
 
 之后的使用流程：
 
@@ -119,6 +140,57 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
         ▼
 在该工作区里新建会话 —— 文件读写、shell、搜索、变更追踪自动落到远端
 ```
+
+## fork 新增：远端项目技能
+
+远端工作区里的项目级技能会被自动发现，进入会话技能目录，可直接加载：
+
+```
+<远端项目根>/.dsh/skills/<name>/SKILL.md      优先级高于用户级技能
+<远端项目根>/.dsh/skills/<name>.md
+<远端项目根>/.agents/skills/<name>/SKILL.md
+<远端项目根>/.agents/skills/<name>.md
+```
+
+- **项目根**取会话工作区向上最近的含 `.git` 的祖先目录；
+- 只扫描一层（`<root>/<name>/SKILL.md` 或 `<root>/<name>.md`），嵌套目录不算技能；
+- 正文每次加载都重新读取，改完立即生效；技能**目录**的变化通过
+  `ctx.fs.watch` 感知（远端有 `inotifywait` 时即时，否则回退轮询）；
+- 与 `@michengai/dsh-skills-manager` 等提供者共存：按 rank 合并，远端项目技能排名
+  90 / 190，高于本机用户级技能；
+- 写 / 改远端技能不需要额外工具：用普通的 `write` / `edit` 写进
+  `<工作区>/.dsh/skills/...` 即可，写入受远端工作区围栏限制。
+
+配置（`cordis.patch.yml` 的行配置）：
+
+```yaml
+- id: ssh-workspace-fork
+  config:
+    announceToAgent: true
+    skills:
+      enabled: true   # 关掉则不注册远端技能提供者
+      watch: true     # 关掉则不监视技能目录（正文改动仍即时生效）
+```
+
+## fork 新增：`run_code`（PTC 模式）
+
+上游在 `ssh://` 工作区里会直接拒绝 `run_code`：PTC 通过 `ctx.subprocess` 起一个
+全新 Node 子进程，而远端 subprocess 桥只允许 `git` 和 `rg`，其余命令一律同步抛错，
+于是模型只能看到「无法读取文件」。
+
+本 fork 的处理：
+
+- PTC 的子进程（`stdio.control === 'pipe'` 的 Node worker）**改为在本机运行**，
+  `cwd` 换成一个按远端工作区命名的私有临时目录（`%TEMP%\dsh-ssh-workspace-ptc\<hash>`）；
+- `ctx.sandbox` 的围栏根同步换成该临时目录——本地沙箱无法把进程限制在一台远端机器上
+  的目录里，程序因此只能写自己的临时区，访问远端文件必须走工具；
+- 程序里访问远端文件请用 PTC 绑定调用 `read` / `write` / `edit` / `glob` / `grep`
+  （这些工具已走 SFTP），不要用 `node:fs` 直接读 `ssh://` 路径；
+- 子进程环境里带 `DSH_REMOTE_PTC_WORKSPACE=<ssh://…>`，便于程序识别当前远端工作区。
+
+**限制**：仅支持 `executionMode: per-call`（默认）。若把 PTC 配成
+`persistent-in-memory`，保留的 REPL 会在每次执行时 `chdir` 到 `ssh://` 路径而失败；
+需要持久 REPL 时请改用本地工作区。
 
 ## 主机管理
 

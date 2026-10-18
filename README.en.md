@@ -9,8 +9,8 @@
 `read` / `write` / `edit` go straight over SFTP to read and write remote files —
 no manual sync, no mount driver, no third-party filesystem.
 
-[![version](https://img.shields.io/github/package-json/v/siqyka/dsh-ssh-workspace)](https://github.com/siqyka/dsh-ssh-workspace)
-[![license](https://img.shields.io/github/license/siqyka/dsh-ssh-workspace)](./LICENSE)
+[![version](https://img.shields.io/github/package-json/v/github2hu/dsh-ssh-workspace)](https://github.com/github2hu/dsh-ssh-workspace)
+[![license](https://img.shields.io/github/license/github2hu/dsh-ssh-workspace)](./LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D%2020-brightgreen)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D%200.2.0--rc.1-blue)
 ![ssh2](https://img.shields.io/badge/ssh2-%5E1.17.0-lightgrey)
@@ -20,6 +20,24 @@ no manual sync, no mount driver, no third-party filesystem.
 </div>
 
 ---
+
+> **This is a fork of [`siqyka/dsh-ssh-workspace`](https://github.com/siqyka/dsh-ssh-workspace)**,
+> maintained by [github2hu](https://github.com/github2hu). The original code and
+> documentation are copyright siqyka and remain distributed under the MIT license.
+>
+> Differences from upstream (0.3.0):
+> 1. **Remote project skills work** — `<workspace>/.dsh/skills` and
+>    `<workspace>/.agents/skills` are discovered by this plugin and registered in
+>    the session skill catalog;
+> 2. **`run_code` (PTC mode) works in a remote workspace** — upstream rejected the
+>    PTC child through its git/ripgrep-only subprocess allowlist;
+> 3. the package is published as `@github2hu/dsh-ssh-workspace` and its loader row
+>    id is `ssh-workspace-fork`, so it can be installed next to upstream without
+>    sharing configuration.
+>
+> Upstream remains the source of the shared features: add it with
+> `git remote add upstream https://github.com/siqyka/dsh-ssh-workspace` and merge
+> `upstream/main` when you want its fixes.
 
 <table>
 <tr>
