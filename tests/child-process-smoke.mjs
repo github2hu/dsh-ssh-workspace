@@ -10,7 +10,7 @@
  */
 
 import childProcess from 'node:child_process'
-import { installChildProcessBridge, uninstallChildProcessBridge, destructiveReasonOf, remoteGitCommand } from '../lib/patch-child-process.js'
+import { installChildProcessBridge, uninstallChildProcessBridge, destructiveReasonOf, remoteGitCommand, translateGitPaths } from '../lib/patch-child-process.js'
 
 const passes = []
 const failures = []
@@ -146,6 +146,27 @@ console.log('[execFile bridge]')
   })
   check('execFile refuses a destructive command', calls.length === 0 && answer.error instanceof Error, json(calls.length))
 }
+
+console.log('[path translation]')
+const REV = ['--no-pager', '-c', 'color.ui=false', 'rev-parse']
+check('rewrites --show-toplevel to the ssh:// spelling',
+  translateGitPaths([...REV, '--show-toplevel'], 'box', '/srv/repo', '/srv/repo\n') === 'ssh://box/srv/repo\n',
+  json(translateGitPaths([...REV, '--show-toplevel'], 'box', '/srv/repo', '/srv/repo\n')))
+check('rewrites --absolute-git-dir',
+  translateGitPaths([...REV, '--absolute-git-dir'], 'box', '/srv/repo', '/srv/repo/.git\n') === 'ssh://box/srv/repo/.git\n')
+check('rewrites a relative --git-dir against the remote cwd',
+  translateGitPaths([...REV, '--git-dir'], 'box', '/srv/repo', '.git\n') === 'ssh://box/srv/repo/.git\n',
+  json(translateGitPaths([...REV, '--git-dir'], 'box', '/srv/repo', '.git\n')))
+check('rewrites worktree list entries',
+  translateGitPaths(['worktree', 'list', '--porcelain'], 'box', '/srv/repo', 'worktree /srv/repo\nHEAD abc\n') === 'worktree ssh://box/srv/repo\nHEAD abc\n')
+check('leaves status output untouched',
+  translateGitPaths(['status', '--porcelain'], 'box', '/srv/repo', ' M src/a.c\n') === ' M src/a.c\n')
+check('leaves log output untouched',
+  translateGitPaths(['log', '--format=%H'], 'box', '/srv/repo', 'abc123\n') === 'abc123\n')
+check('leaves a non-path rev-parse answer untouched',
+  translateGitPaths([...REV, 'HEAD'], 'box', '/srv/repo', 'abc123\n') === 'abc123\n')
+check('leaves an empty answer alone',
+  translateGitPaths([...REV, '--show-toplevel'], 'box', '/srv/repo', '') === '')
 
 console.log('[teardown]')
 uninstallChildProcessBridge()

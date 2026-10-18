@@ -19,6 +19,12 @@
 - 新增只读诊断路由 `GET /api/dsh-ssh-workspace/diagnostics`：返回 git 桥是否安装，
   以及最近 32 次被接管的调用（别名、远端 cwd、argv、退出码）。用于区分
   「侧栏没发出请求」与「桥接没生效」。
+- **修复：侧栏仍显示「不是 git 仓库」**。`git rev-parse --show-toplevel` 的答案原本是
+  裸 POSIX 路径（`/home/u/repo`），侧栏把它当成宿主绝对路径（Windows 上变成 `C:\home\…`），
+  于是后续 git 调用不再带 `ssh://`、绕开桥接、由本机 git 报「不是仓库」。现在桥接把
+  `--show-toplevel` / `--absolute-git-dir` / `--git-dir` / `--git-common-dir` /
+  `worktree list` 的路径答案翻译回 `ssh://<别名><路径>`；`status` / `log` / `diff` 的
+  相对路径不动。
 
 ## [0.3.0] — fork 首版
 
