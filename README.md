@@ -116,7 +116,7 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 2. **输入来源**：本 fork 尚未发布到 npm，目前用**本地目录**安装：
 
    ```text
-   D:\Workspace\Deepseek Harness\Plugins\dsh-ssh-workspace
+   <本仓库克隆到本机后所在的绝对路径>
    ```
 
    插件管理器会以 `link:` 方式接入 profile（`node_modules` 里是指向该目录的联接），
