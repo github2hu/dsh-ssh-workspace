@@ -2,6 +2,25 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.3.3]
+
+### 新功能
+
+- **彻底删除会一并删除会话日志**：新增 `POST /api/dsh-ssh-workspace/purge`（以及
+  `lib/session-logs.js`）。它只接受**已停用**的工作区，删除的会话范围是 DSH 登记里
+  该工作区名下的 `sessionIds`（含已归档），按会话后端自己的磁盘布局
+  `<root>/--<encoded-cwd>--/<encoded-id>/` 逐目录删除；远端目录仍然不动。
+  DSH 没有公开的会话删除 API，所以路由直接作用于磁盘布局，并把
+  `sessionsDeleted` / `sessionsMissing` / `sessionsFailed` 全部回报给面板，
+  删除失败不会被说成成功。
+- **卸载与彻底删除的弹窗都支持「下次不再提醒」**：勾选后写入
+  `$DSH_HOME/dsh-ssh.json` 的 `preferences` 分区
+  （`skipUnmountConfirm` / `skipPurgeConfirm`），跨浏览器生效。记住之后：
+  卸载按安全默认（`detach`）直接执行，彻底删除直接执行（含删会话）；
+  偏好读不出来时一律退回「要问」。
+- `tests/purge-smoke.mjs`（22 项）覆盖偏好读写/拒绝非法键值、会话目录编码、
+  定位、删除与「缺日志不算错误」；`client-shape-smoke` 增加 7 项界面/文案断言。
+
 ## [0.3.2]
 
 ### 新功能

@@ -44,6 +44,7 @@ const SUITES = [
   'remote-skills',
   'ptc-local',
   'child-process',
+  'purge',
   'client-shape',
   'tree-transfer',
   'insert-once',

@@ -1,6 +1,6 @@
 {
   "name": "@github2hu/dsh-ssh-workspace",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Remote SSH workspaces for DSH: mount a directory on an SSH host as a DSH workspace with browser UI sidebar panel, plus remote-workspace skills and run_code support",
   "type": "module",
   "repository": {

@@ -124,18 +124,18 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
 console.log('\n[detached workspace: delete for good]')
 if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
   const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
-  // The action only touches the local side: mode "forget" clears the DSH
-  // workspace registration AND this plugin's disabled mark, so no row and no
-  // runtime fence survives it. Both locales must carry every label, or one
+  // The action removes the local record (registration + disabled mark) and the
+  // session logs it accounts for. Both locales must carry every label, or one
   // language renders a blank button.
   for (const key of ['detached.purge', 'detached.purging', 'detached.confirmPurge', 'detached.purgeTitle', 'detached.purgeHint', 'detached.purgeOk', 'detached.purgeFail']) {
     const occurrences = (client.match(new RegExp(`'${key.replaceAll('.', '\\.')}':`, 'g')) ?? []).length
     check(`${key} is translated in both dictionaries`, occurrences === 2, `found ${occurrences}`)
   }
-  check('the action posts forget mode and leaves archiving alone',
-    /mode: 'forget', archiveSessions: false/.test(client))
-  check('the row button opens a confirmation dialog instead of acting',
-    /onClick: \(\) => setPurgeTarget\(wsPath\)/.test(client) &&
+  check('the action goes through the purge route and deletes sessions',
+    /fetchJson\(API\.purge/.test(client) && /deleteSessions: true/.test(client))
+  check('the row button opens a confirmation dialog (or runs directly when opted out)',
+    /skipPurgeConfirm === true/.test(client) &&
+      /setPurgeTarget\(wsPath\)/.test(client) &&
       /onClick: \(\) => handlePurge\(purgeTarget\)/.test(client))
   check('the dialog can be dismissed without deleting',
     /if \(purgeBusy === null\) setPurgeTarget\(null\)/.test(client) &&
@@ -151,8 +151,8 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
   const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
   const occurrences = (client.match(/'mounted\.unmountTitle':/g) ?? []).length
   check('mounted.unmountTitle is translated in both dictionaries', occurrences === 2, `found ${occurrences}`)
-  check('the row button opens the dialog instead of unloading',
-    /onClick: \(\) => \{ setUnmountTarget\(wsPath\); setUnmountMode\('detach'\) \}/.test(client))
+  check('the row button opens the dialog (or runs directly when opted out)',
+    /skipUnmountConfirm === true/.test(client) && /setUnmountTarget\(wsPath\)/.test(client))
   check('the dialog confirm runs the unload with the chosen mode',
     /onClick: \(\) => handleUnmount\(unmountTarget, unmountMode\)/.test(client))
   check('the record checkbox stays in the dialog and drives the mode',
@@ -160,6 +160,24 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
       /setUnmountMode\(event\.target\.checked \? 'deregister' : 'detach'\)/.test(client))
   check('dismissing the dialog leaves the row mounted and resets the mode',
     /setUnmountTarget\(null\); setUnmountMode\('detach'\)/.test(client))
+}
+
+console.log('\n[confirmation opt-outs and session deletion]')
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  for (const key of ['prefs.skip', 'prefs.skipHint', 'prefs.saveFail', 'detached.purgeSessionsFailed', 'detached.purgeSessionsMissing']) {
+    const occurrences = (client.match(new RegExp(`'${key.replaceAll('.', '\\.')}':`, 'g')) ?? []).length
+    check(`${key} is translated in both dictionaries`, occurrences === 2, `found ${occurrences}`)
+  }
+  check('both dialogs render a do-not-ask checkbox',
+    (client.match(/checked: unmountSkip/g) ?? []).length === 1 &&
+      (client.match(/checked: purgeSkip/g) ?? []).length === 1)
+  check('the opt-out is persisted through the preferences route',
+    /fetchJson\(API\.prefs/.test(client) && /skipUnmountConfirm|skipPurgeConfirm/.test(client))
+  check('a remembered opt-out skips the dialog and runs the action',
+    /skipUnmountConfirm === true/.test(client) && /skipPurgeConfirm === true/.test(client))
+  check('session counts are reported after a purge',
+    /sessionsDeleted/.test(client) && /sessionsFailed/.test(client))
 }
 
 console.log('\n[publish whitelist]')
