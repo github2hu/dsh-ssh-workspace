@@ -121,6 +121,25 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
   check('the client bundle is inspectable for declared classes', false, 'bundle missing')
 }
 
+console.log('\n[detached workspace: delete for good]')
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  // The action only touches the local side: mode "forget" clears the DSH
+  // workspace registration AND this plugin's disabled mark, so no row and no
+  // runtime fence survives it. Both locales must carry every label, or one
+  // language renders a blank button.
+  for (const key of ['detached.purge', 'detached.purging', 'detached.confirmPurge', 'detached.purgeHint', 'detached.purgeOk', 'detached.purgeFail']) {
+    const occurrences = (client.match(new RegExp(`'${key.replaceAll('.', '\\.')}':`, 'g')) ?? []).length
+    check(`${key} is translated in both dictionaries`, occurrences === 2, `found ${occurrences}`)
+  }
+  check('the action posts forget mode and leaves archiving alone',
+    /mode: 'forget', archiveSessions: false/.test(client))
+  check('arming is per row and reversible',
+    /setPurgeConfirm\(wsPath\)/.test(client) && /setPurgeConfirm\(null\)/.test(client))
+  check('the destructive button reuses the shared danger style',
+    /sshwsp-btn sshwsp-btn-danger/.test(client))
+}
+
 console.log('\n[publish whitelist]')
 const files = pkg.files ?? []
 check('lib/ ships in the tarball', files.includes('lib/'), JSON.stringify(files))
