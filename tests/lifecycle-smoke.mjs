@@ -26,8 +26,12 @@ if (!coreRoot) {
   process.exit(0)
 }
 // This suite drives the host's own framework (Cordis service ordering), so a
-// generated stub root cannot stand in for it: skip rather than crash.
-skipWithoutRealPeers('lifecycle smoke', 'a real assembled DSH tree (@deepseek-ai/cordis and dsh-fs)')
+// generated stub root cannot stand in for it: skip rather than crash. The
+// package list is explicit — this suite mounts lib/index.js, which registers the
+// agent tools, so a missing `dsh-tools` would crash here rather than skip.
+skipWithoutRealPeers('lifecycle smoke', 'a real assembled DSH tree (@deepseek-ai/cordis, dsh-fs and dsh-tools)', {
+  requires: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-fs', '@deepseek-ai/dsh-tools'],
+})
 // Let the plugin's own requirePeer find the same tree (see lib/peers.js).
 process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
@@ -48,17 +52,25 @@ const EXPECTED_TOOLS = [
   'ssh_workspace_shell',
   'ssh_workspace_forward',
   'ssh_workspace_unforward',
+  'ssh_workspace_reverse_forward',
 ]
 // Route paths the browser half must expose. Kept in step with ROUTES in
-// lib/routes.js: hosts, host save/delete/forget-key/disconnect, test, ls,
-// status, mount, unmount, enable, forward, unforward, the six saved-forward
-// routes (save/toggle/delete/remember/probe/settings), transfer, download,
-// upload.
-const EXPECTED_ROUTES = 22
+// lib/routes.js: hosts, host save/delete/forget-key/disconnect/reconnect,
+// test, ls, status, self-check, support-bundle, mount, unmount, enable,
+// forward, unforward, the six saved-forward routes
+// (save/toggle/delete/remember/probe/settings), transfer, download,
+// download-tree, upload and upload-chunk.
+//
+// The number is pinned rather than derived on purpose: deriving it from ROUTES
+// would make "a route was added but never registered" pass, which is the thing
+// this assertion exists to notice.
+const EXPECTED_ROUTES = 27
 
 let failures = 0
+let passes = 0
 function check (label, ok, detail) {
   if (ok) {
+    passes += 1
     console.log(`  PASS  ${label}`)
   } else {
     failures += 1
@@ -204,5 +216,5 @@ console.log('\n[5] announceToAgent must not require a systemPrompt service')
   check('agent tools still registered', [...app.get('tools').registered.keys()].length === EXPECTED_TOOLS.length)
 }
 
-console.log(`\n=== ${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`} ===`)
+console.log(`\n=== ${passes} passed, ${failures} failed ===`)
 process.exit(failures === 0 ? 0 : 1)

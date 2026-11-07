@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./docs/assets/header.png" alt="dsh-ssh-workspace header" width="640" />
+<img src="https://raw.githubusercontent.com/siqyka/dsh-ssh-workspace/main/docs/assets/header.png" alt="dsh-ssh-workspace header" width="640" />
 
 # dsh-ssh-workspace
 
@@ -15,7 +15,7 @@ no manual sync, no mount driver, no third-party filesystem.
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D%200.2.0--rc.1-blue)
 ![ssh2](https://img.shields.io/badge/ssh2-%5E1.17.0-lightgrey)
 
-[简体中文](./README.md) · **English**
+[简体中文](https://github.com/siqyka/dsh-ssh-workspace/blob/main/README.md) · **English**
 
 </div>
 
@@ -127,10 +127,12 @@ same error semantics.
    click Install:
    - **npm package** (distributed via npm, version pinning supported):
      `@shiqyka/dsh-ssh-workspace`, or pin a version
-     `@shiqyka/dsh-ssh-workspace@0.1.24`
+     `@shiqyka/dsh-ssh-workspace@0.2.8`
      ([npm page](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace));
    - **repository address** (latest code from Git):
      `https://github.com/siqyka/dsh-ssh-workspace`
+     (the plugin manager installs its dependencies for you; only a manual clone
+     linked into a profile needs the next section)
 3. **Restart**: restart the client once installation finishes, and you're ready to go.
 
 From there:
@@ -145,6 +147,16 @@ Confirm your hosts in the "Remote Workspaces" panel (add one if needed)
 Create a session in that workspace — file I/O, shell, search and change tracking
 all land on the remote host automatically
 ```
+
+### Using a source checkout
+
+```bash
+git clone https://github.com/siqyka/dsh-ssh-workspace.git
+cd dsh-ssh-workspace
+npm ci          # ssh2 is a direct dependency and does not arrive with a clone
+```
+
+Then restart the client.
 
 ## Host management
 
@@ -162,7 +174,7 @@ blank while editing keeps the current value. Deleting a
 host does not automatically unmount its mounted workspaces, but those workspaces
 become inaccessible since the host no longer exists.
 
-> See [docs/hosts.md](./docs/hosts.md) for the storage format, `~/.ssh/config` parsing
+> See [docs/hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) for the storage format, `~/.ssh/config` parsing
 > rules, and the credential policy.
 
 ## Configuration
@@ -171,12 +183,42 @@ become inaccessible since the host no longer exists.
 | --- | --- | --- |
 | `enabled` | `true` | Master switch |
 | `announceToAgent` | `false` | Whether to inject a capability description (a system-prompt section) into every agent |
+| `allowLan` | `false` | LAN deployment: the browser HTTP routes accept private-network source addresses (IPv4 RFC1918, IPv6 ULA/link-local) |
+| `allowedHosts` | `[]` | Extra `Host` values to admit (with `allowLan`), e.g. when the panel is reached by a LAN hostname |
 | `engine.idleTimeoutMs` | `1800000` | Recycle a connection after it stays idle this long (ms) |
 | `engine.connectTimeoutMs` | `15000` | Per-connect SSH handshake budget (ms) |
 | `engine.keepaliveIntervalMs` | `15000` | Keepalive heartbeat interval (ms) |
 | `engine.sweepIntervalMs` | `60000` | How often idle connections are swept (ms) |
+| `engine.reconnect` | see below | Background reconnect after a drop; `false` restores the old "retry once inside the operation" behaviour |
+| `engine.reconnect.baseDelayMs` | `1000` | Wait before the first retry (ms); doubles per attempt |
+| `engine.reconnect.maxDelayMs` | `60000` | Ceiling for a single wait (ms) |
+| `engine.reconnect.maxAttempts` | `0` | Attempt limit; `0` means unlimited |
+| `engine.reconnect.jitter` | `0.2` | Downward-only jitter ratio, so several hosts do not reconnect in lockstep; never exceeds the ceiling |
 
 > All four `engine` entries are optional (invalid values fall back to the defaults) and rarely need tuning.
+
+### LAN deployments (`allowLan`)
+
+By default only the **loopback interface** may call the browser routes
+(`127.0.0.1` / `::1` / `localhost`). When the webserver binds `0.0.0.0` and the
+browser sits on another LAN machine, requests are refused with
+`forbidden: loopback-only` — that is the anti-DNS-rebinding fence, not a
+malfunction. With `allowLan: true`:
+
+- the source address may be any **private-network** address (IPv4 `10/8`,
+  `172.16/12`, `192.168/16`; IPv6 ULA `fc00::/7` and link-local `fe80::/10`);
+  public addresses are still refused;
+- the `Host` header must name one of **this machine's own listening
+  addresses** (each interface address plus the port; loopback spellings always
+  work), and a mismatching Host still gets
+  `forbidden: unexpected Host header …` — the anti-rebinding semantics carry
+  over unchanged;
+- if the panel is reached by a name the machine's interfaces do not know (a
+  LAN hostname, a reverse-proxy spelling), add it to `allowedHosts` (case and
+  surrounding whitespace insensitive, with or without a port);
+- the JSON content-type check on POST and the 405/415 handling are unchanged.
+
+See [SECURITY.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/SECURITY.md) for the full security discussion.
 
 ## Agent tools
 
@@ -184,7 +226,7 @@ become inaccessible since the host no longer exists.
 | --- | --- |
 | `ssh_workspace_hosts` | List available hosts (store + `~/.ssh/config` candidates) |
 | `ssh_workspace_mount` | Register a remote directory as a workspace and return an `ssh://` path |
-| `ssh_workspace_unmount` | Detach a remote workspace (record and sessions kept, sessions archived — reversible) |
+| `ssh_workspace_unmount` | Detach a remote workspace (the record and its sessions are kept by default, so it is reversible; opting into "also remove the record" archives the sessions and deletes the record) |
 | `ssh_workspace_enable` | Mount a detached workspace again and unarchive its sessions |
 | `ssh_workspace_status` | Mounted / detached lists, connections, forwards, and persistent sessions |
 | `ssh_workspace_exec` | Run a shell command **on the remote host** (optionally `run_in_background`) |
@@ -193,9 +235,11 @@ become inaccessible since the host no longer exists.
 | `ssh_workspace_forward` | Map a remote port to this machine and return an openable URL |
 | `ssh_workspace_unforward` | Close a port mapping and release the local port |
 
-> For tool parameters, return fields, and error semantics, see [docs/tools.md](./docs/tools.md).
+> For tool parameters, return fields, and error semantics, see [docs/tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md).
 
 ## Capabilities
+
+> The complete inventory by domain (dependencies, degradation, limits included) is in [docs/features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md).
 
 ### Remote files
 
@@ -205,9 +249,9 @@ become inaccessible since the host no longer exists.
 | Atomic writes | A write first lands in a staging file in the same directory, then replaces the target. OpenSSH's `posix-rename@openssh.com` is preferred; when the server doesn't support it, the plugin degrades to "delete, then rename" (no longer atomic in that case) |
 | Line-ending fidelity | Editing a CRLF file won't rewrite it to LF |
 | Binary and encoding | Text reads reject NUL / invalid UTF-8; `readBytes` returns raw bytes |
-| Write fence | Remote writes may only land inside a mounted remote workspace; anything outside returns `FS_SANDBOX_DENIED`. Reads are unrestricted |
+| Write fence | Remote writes may only land inside a mounted remote workspace; anything outside returns `FS_OUTSIDE_WORKSPACE`. **The `read-only` mode also blocks remote writes** (`FS_SANDBOX_DENIED`). Reads are unrestricted |
 | Large files stream | Previews and `read` stream remote files in 256 KiB chunks instead of loading the whole file into memory |
-| Remote changes auto-refresh | The sidebar file tree and previews pick up remote changes by polling — about every 2 seconds, backing off while idle (after 15 quiet rounds to 5 s, after 30 to 10 s) and snapping back to 2 s on any change. SFTP metadata has no sub-second timestamps, so consecutive rewrites of equal size within the same second may not trigger a refresh; additions, removals, and renames always do |
+| Remote changes auto-refresh | Remote `inotifywait` push events are preferred (immediate, not bound by mtime precision); without it the plugin falls back to polling — about every 2 seconds, backing off while idle (after 15 quiet rounds to 5 s, after 30 to 10 s) and snapping back to 2 s on any change. On the polling path SFTP metadata has no sub-second timestamps, so consecutive rewrites of equal size within the same second may not trigger a refresh; additions, removals, and renames always do |
 
 ### Remote execution
 
@@ -228,7 +272,9 @@ become inaccessible since the host no longer exists.
 | Drag or right-click a file onto the task | Files and folders in the tree can be **dragged straight onto the chat input** (dashed highlight while hovering; releasing inserts the reference chip) or picked via **right-click → "Add to task"** — both produce exactly what an `@` completion selection would |
 | "Add workspace" gets a remote entry | DSH's "Add workspace" button becomes an anchored menu offering "New local workspace" (DSH's native picker) or "New remote workspace" (choose a host → browse the remote directory level by level → confirm the mount; unwritable directories produce a warning and refuse creation) |
 | Remote workspaces wear a dedicated mark | Workspaces created by this plugin show the plugin's remote mark instead of the plain folder icon in sidebar rows, the workspace picker, and the session page's workspace button |
-| Host management panel | Add / edit / delete hosts (key paths, auth method, notes, …); changes take effect immediately and drop that alias's old connection. `~/.ssh/config` hosts are shown read-only. "Test connection" results appear as a toast at the top that auto-dismisses after a few seconds (click to close early). Connection state is shown inline after the host name, and a connection can be dropped on demand |
+| Host management panel | Add / edit / delete hosts (key paths, auth method, notes, …); changes take effect immediately and drop that alias's old connection. `~/.ssh/config` hosts are shown read-only. "Test connection" only probes reachability (it releases the connection it opened, so a probe never doubles as "connect") and reports as a toast at the top that auto-dismisses after a few seconds (click to close early). Connection state is shown inline after the host name, and dropping a connection also tears down that host's port forwards |
+| Directory browser dialog | A host card's "Browse directory" walks the remote tree level by level, uploads several files into the directory on screen, downloads individual files, and can "Mount this directory" in place; the dialog carries a transfer queue with per-item percentages or byte counts and per-item cancellation |
+| Uploads / downloads from the file panel | Uploading is offered by the directory browser dialog (several files at once) and by the file tree's row menu ("Upload a file here", remote rows only). The "Workspace Files" panel header keeps a single "Transfers" button that stays visible even with an empty queue — **only while the panel shows a remote `ssh://` workspace**; a local listing keeps DSH's own header — badged while something is in flight, that opens the progress popover (per-item progress, speed and a progress bar, cancel, clear finished). The host's own right-hand tree still has no multi-select |
 
 ### Connection model
 
@@ -289,21 +335,33 @@ Explicitly **not supported**:
 
 | Doc | Contents |
 | --- | --- |
-| [architecture.md](./docs/architecture.md) | Architecture & implementation: the `ctx.fs` / `ctx.shell` / `ctx.subprocess` takeovers, change watching & streaming, built-in bridges, engine & connection model |
-| [protocol.md](./docs/protocol.md) | The `ssh://` path protocol: syntax, normalization, display rules, `file:` URIs |
-| [hosts.md](./docs/hosts.md) | Host configuration & auth: storage format, `~/.ssh/config` fallback, panel management |
-| [tools.md](./docs/tools.md) | Agent tool reference: the ten `ssh_workspace_*` tools |
-| [ui.md](./docs/ui.md) | UI guide: the panel, the dual "Add workspace" entry, remote-workspace marks |
-| [development.md](./docs/development.md) | Development, debugging & release: source layout, dependency resolution, packaging |
-| [troubleshooting.md](./docs/troubleshooting.md) | Troubleshooting & FAQ: error semantics, connection issues, known limitations |
-| [roadmap.md](./docs/roadmap.md) | Feature roadmap: candidates, motivations, acceptance criteria |
-| [CHANGELOG.md](./CHANGELOG.md) | Changelog: additions, fixes and changes per version |
+| [features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md) | **Feature reference**: the complete capability inventory by domain (workspaces / files / execution / transfer / forwarding / UI / security / config / degradation matrix / limits) |
+| [architecture.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/architecture.md) | Architecture & implementation: the `ctx.fs` / `ctx.shell` / `ctx.subprocess` takeovers, change watching & streaming, built-in bridges, engine & connection model |
+| [protocol.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/protocol.md) | The `ssh://` path protocol: syntax, normalization, display rules, `file:` URIs, the write fence and the detached fence |
+| [hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) | Host configuration & auth: storage format, `~/.ssh/config` fallback, panel management |
+| [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent tool reference: the ten `ssh_workspace_*` tools |
+| [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | UI guide: the panel, the dual "Add workspace" entry, remote-workspace marks, the port-forward and persistent-shell sections |
+| [forward-persistence.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/forward-persistence.md) | Port-forward persistence: intent vs. fact, the two disconnect paths agreeing, auto-start |
+| [unmount-modes.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/unmount-modes.md) | The two unmount modes: `detach` (reversible) vs. `deregister`, session archiving, the disable fence |
+| [trigger-gates.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/trigger-gates.md) | **One-liners that trip each fence**: how to hit each of the four fences, which error code to expect, and how to prove it from remote state |
+| [acceptance-prompts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/acceptance-prompts.md) | **Acceptance prompts**: a per-case checklist for the three permission-fence decisions (action → required result → verdict), paste-ready for a remote session |
+| [development.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/development.md) | Development, debugging & release: source layout, dependency resolution, packaging |
+| [upstream-workarounds.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/upstream-workarounds.md) | Upstream workaround register: host defects, the one-line fix, the self-retiring signal, and the removal steps |
+| [upstream-workaround-pattern.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/upstream-workaround-pattern.md) | **The retirement pattern for upstream workarounds**: when it applies, the seven pieces, tri-state probing, a reachable notification channel, anti-patterns, and its cost boundary |
+| [troubleshooting.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/troubleshooting.md) | Troubleshooting & FAQ: error semantics, connection issues, known limitations |
+| [optimization-and-future.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/optimization-and-future.md) | **Optimization items & future work (volume 1)**: the first full review's 16 items (each with its outcome and counter-verification), explicit non-goals, and 9 capability directions |
+| [optimization-and-future02.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/optimization-and-future02.md) | **Optimization items & future work (volume 2, 2026-11-04 review)**: the new O-17 / O-18 findings, corrections to O-11 / O-12 / O-13, F-10 / F-11, and a reproducible measurement log |
+| [CONTRIBUTING.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/CONTRIBUTING.md) | Contributing: environment, the three test tiers, code conventions, before you ship |
+| [SECURITY.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/SECURITY.md) | Security policy: how credentials are stored, host-key verification, known boundaries, reporting |
+| [CHANGELOG.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/CHANGELOG.md) | Changelog: additions, fixes and changes per version |
 
 ---
 
+## License
+
 <div align="center">
 
-**[MIT](./LICENSE) © 2026 siqyka**
+**[MIT](https://github.com/siqyka/dsh-ssh-workspace/blob/main/LICENSE) © 2026 siqyka**
 
 <sub>SSH distance, local feel.</sub>
 

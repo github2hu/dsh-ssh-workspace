@@ -1,0 +1,447 @@
+/**
+ * A real SSH server, in-process, for tests that need a transport to break.
+ *
+ * ## Why a server instead of another stub
+ *
+ * Every existing suite fakes the *record*: it sets `record.broken = true` by
+ * hand and asserts what the engine does next. That proves the branch, never the
+ * trigger. The reconnect loop exists because a real socket dies at times a stub
+ * cannot reproduce — during the handshake, after auth but before the channel
+ * opens, mid-transfer, and while nobody is looking. `client.on('close')` firing
+ * on its own is exactly the half a hand-set flag skips.
+ *
+ * ssh2 ships `Server` (the same dependency the plugin already has), so this is
+ * not new test infrastructure from scratch: it is the existing dependency's
+ * existing capability. The server speaks the real protocol, so the plugin's
+ * host-key verifier, its SFTP channel, its exec path and its `close` handler all
+ * run unmodified against it.
+ *
+ * ## What it deliberately is NOT
+ *
+ * Not a filesystem. The SFTP subsystem accepts the channel and answers
+ * `OPEN`/`CLOSE`/`STAT` with fixed values; it never emulates a directory tree.
+ * A test that needs real files belongs in the `live` suite against a real host.
+ * The value here is the transport: connection accepted, channel opened, socket
+ * killed on cue.
+ *
+ * ## Controls
+ *
+ * Every server exposes:
+ *
+ *  - `port`            — where to connect.
+ *  - `fingerprint`     — the SHA256 of its host key, for pinning assertions.
+ *  - `connections`     — count of accepted connections.
+ *  - `liveConnections` — how many are still open (for teardown assertions).
+ *  - `sessions`        — count of opened sessions (channels).
+ *  - `dropAll()`       — destroy every live socket, as a network blip would.
+ *  - `setHostKey(key)` — swap the key a *new* connection presents (O-08).
+ *  - `forwardRequests` — every `direct-tcpip` request (destination and port).
+ *  - `forwardedChannels` — how many of them became a live tunnel.
+ *  - `reverseRequests` — every `tcpip-forward` (what the client asked to bind).
+ *  - `reversePorts`    — ports this server listens on because the client asked.
+ *  - `reverseConnections` — connections that arrived on those listeners.
+ *  - `peerPorts`       — source port of each accepted connection.
+ *  - `forwardSourcePorts` — local port each tunnel left from. Comparing the two
+ *    proves a connection came THROUGH a hop: on loopback the addresses are
+ *    identical, but the ports are not.
+ *  - `rejectNext(n)`   — refuse the next `n` connections before auth.
+ *  - `close()`         — stop listening and drop everything.
+ *
+ * `bindHost` (default `127.0.0.1`) is what a suite uses to make a server
+ * reachable from ONE address and not another — the difference between a jump
+ * chain that really tunnels and one that merely could have.
+ *
+ * `direct-tcpip` (what `ProxyJump` uses) is accepted only when the suite opts in
+ * with `allowForwarding: true`, because "this server refuses to forward" is a
+ * real configuration and a suite must be able to exercise it. `tcpip-forward`
+ * (what `ssh -R` uses) has its own switch, `allowReverseForwarding`, for the
+ * same reason: a hardened server refuses both, and the two refusals are
+ * different code paths.
+ *
+ * The drop is `socket.destroy()`, not a graceful `end()`: a lid close or a
+ * Wi-Fi switch does not send FIN, and a server that ended cleanly would exercise
+ * a path the user never hits.
+ *
+ * @module tests/support/fake-ssh-server
+ */
+
+import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
+import net from 'node:net'
+
+// `createServer` from node:net is unused: ssh2.Server owns its own listener.
+// Kept out of the import list so the linter's unused-import rule stays satisfied.
+
+/**
+ * ssh2 is a real dependency of this plugin, so it resolves from the plugin's
+ * own tree even when `DSH_CORE_ROOT` points at a stub root: `requirePeer`
+ * prefers `localRequire`, and this helper does the same.
+ *
+ * Resolving from a file INSIDE the plugin root matters: `createRequire` of a
+ * bare module id walks up from the given path, so `node_modules/ssh2` next to
+ * the plugin is found regardless of the process cwd.
+ *
+ * @param {string} [pluginRoot] - the plugin checkout.
+ * @returns {object} the ssh2 module.
+ */
+export function loadSsh2 (pluginRoot) {
+  const base = pluginRoot ?? process.cwd()
+  const fromPlugin = createRequire(`${base}/package.json`)
+  try {
+    return fromPlugin('ssh2')
+  } catch {
+    // A suite run from an installed copy may not carry a dev dependency; the
+    // ambient resolution is the last honest attempt before failing loudly.
+    return createRequire(import.meta.url)('ssh2')
+  }
+}
+
+/** SHA256 of an OpenSSH public key line, in the form the plugin records. */
+export function fingerprintOf (publicKeyLine) {
+  const [type, blob] = publicKeyLine.trim().split(/\s+/u)
+  const raw = Buffer.from(blob, 'base64')
+  return `SHA256:${createHash('sha256').update(raw).digest('base64').replace(/=+$/u, '')}`
+}
+
+/**
+ * Start one fake SSH server.
+ *
+ * @param {object} [options] - server options.
+ * @param {string} [options.pluginRoot] - where to resolve ssh2 from.
+ * @param {string} [options.user] - accepted username (default `tester`).
+ * @param {string} [options.password] - when set, password auth is accepted.
+ * @param {boolean} [options.allowPublicKey] - accept any public key (default true).
+ * @param {(channel: object) => void} [options.onExec] - called per exec request with `{command, stream}`.
+ * @param {(sftp: object) => void} [options.onSftp] - called once per SFTP channel.
+ * @returns {Promise<object>} the running server handle.
+ */
+export async function startFakeSshServer (options = {}) {
+  const ssh2 = loadSsh2(options.pluginRoot)
+  const user = options.user ?? 'tester'
+  const password = options.password
+  const allowPublicKey = options.allowPublicKey !== false
+
+  // Parsed-and-retried: see `freshHostKey` for why a generated key is not
+  // trusted until ssh2 has accepted it.
+  let keyPair = freshHostKey(options.pluginRoot)
+  const rejectRemaining = { value: 0 }
+  let closed = false
+  let boundPort = 0
+  const clients = new Set()
+  const state = { connections: 0, sessions: 0, execs: [], sftpChannels: 0, agentRequests: 0, forwardRequests: [], forwardedChannels: 0, peerPorts: [], forwardSourcePorts: [], reverseListeners: new Map(), reverseConnections: 0, reverseRequests: [] }
+
+  /**
+   * Build and listen on one ssh2 Server.
+   *
+   * A function rather than a one-shot because ssh2 reads `hostKeys` in its
+   * constructor and keeps the parsed keys in a closure: the only way to change
+   * the key a NEW connection sees is a new listener. That is also what actually
+   * happens in the world — a host is reinstalled and comes back with a new key
+   * on the same address.
+   *
+   * @param {string} privateKey - PEM private key to present.
+   * @param {number} [port] - port to bind; 0 picks a free one.
+   * @returns {Promise<object>} the listening ssh2 Server.
+   */
+  async function listen (privateKey, port = 0) {
+    const server = new ssh2.Server({
+      hostKeys: [privateKey],
+      ident: 'SSH-2.0-dsh-ssh-workspace-test',
+    }, (client) => {
+      state.connections += 1
+      // The ssh2 `Connection` exposes only `end()`, which sends FIN. A lid close
+      // or a Wi-Fi switch sends nothing, and a graceful end would exercise a
+      // path the user never hits, so the live connection is kept for a hard
+      // destroy of its socket (see `dropAll`).
+      clients.add(client)
+      client.on('close', () => clients.delete(client))
+      client.on('authentication', (ctx) => {
+        if (ctx.method === 'password' && password !== undefined && ctx.password === password) {
+          ctx.accept()
+          return
+        }
+        if (ctx.method === 'publickey' && allowPublicKey) {
+          // Accept the probe AND the real signature; ssh2 sends both.
+          ctx.accept()
+          return
+        }
+        ctx.reject()
+      })
+      client.on('ready', () => {
+        // `tcpip-forward` is `ssh -R`: the CLIENT asks THIS server to listen,
+        // and connections arriving on that port are pushed back to the client
+        // as `forwarded-tcpip` channels. Without a handler ssh2 answers
+        // FAILURE, which is what a server with `AllowTcpForwarding no` does —
+        // so a suite that wants a working reverse tunnel opts in.
+        //
+        // The listener is a real net.Server, so a suite can connect to the
+        // assigned port the way a remote process would and watch the tunnel
+        // carry the bytes.
+        client.on('request', (acceptReq, rejectReq, name, data) => {
+          if (name === 'tcpip-forward') {
+            if (options.allowReverseForwarding !== true) {
+              rejectReq()
+              return
+            }
+            const bindPort = data.bindPort
+            state.reverseRequests.push({ bindAddr: data.bindAddr, bindPort })
+            const server = net.createServer((remoteSocket) => {
+              state.reverseConnections += 1
+              // `boundAddr`/`boundPort` are the address the CLIENT asked this
+              // server to listen on — ssh2 on the client side looks the pair up
+              // in its own `_forwarding` table and drops the channel when it
+              // does not match. Reporting the address the socket actually
+              // arrived on instead is the natural mistake, and it produces a
+              // tunnel that accepts connections and then silently never
+              // delivers them.
+              client.forwardOut(
+                data.bindAddr,
+                boundPort,
+                remoteSocket.remoteAddress ?? '127.0.0.1',
+                remoteSocket.remotePort ?? 0,
+                (error, stream) => {
+                  if (error !== undefined && error !== null) {
+                    remoteSocket.destroy()
+                    return
+                  }
+                  remoteSocket.pipe(stream).pipe(remoteSocket)
+                  remoteSocket.on('error', () => { try { stream.destroy() } catch { /* gone */ } })
+                  stream.on('error', () => remoteSocket.destroy())
+                  stream.on('close', () => remoteSocket.destroy())
+                },
+              )
+            })
+            let boundPort
+            server.once('error', () => rejectReq())
+            server.listen(bindPort, '127.0.0.1', () => {
+              boundPort = server.address().port
+              state.reverseListeners.set(`${data.bindAddr}:${boundPort}`, server)
+              acceptReq(boundPort)
+            })
+            return
+          }
+          if (name === 'cancel-tcpip-forward') {
+            const key = `${data.bindAddr}:${data.bindPort}`
+            const server = state.reverseListeners.get(key)
+            if (server !== undefined) {
+              state.reverseListeners.delete(key)
+              try { server.close() } catch { /* already closed */ }
+              acceptReq()
+              return
+            }
+            rejectReq()
+            return
+          }
+          rejectReq()
+        })
+        // `direct-tcpip` is what a jump chain uses: the client asks THIS server
+        // to open a TCP connection to some address, and then speaks SSH down
+        // the resulting stream. Without a handler ssh2 rejects the channel,
+        // which is precisely how a server with forwarding disabled behaves —
+        // so a suite that wants a working chain must see it accepted.
+        //
+        // The tunnel is a real TCP connection to the requested address, so a
+        // chain built on top of it reaches the NEXT fake server (or the target)
+        // exactly as it would through a real bastion.
+        client.on('tcpip', (acceptTcpip, rejectTcpip, info) => {
+          state.forwardRequests.push({ destIP: info.destIP, destPort: info.destPort })
+          if (options.allowForwarding !== true) {
+            rejectTcpip()
+            return
+          }
+          const upstream = net.connect(info.destPort, info.destIP)
+          upstream.once('connect', () => {
+            // The LOCAL port this tunnel leaves from. Comparing it with what
+            // the destination saw is the only way to prove a connection
+            // arrived THROUGH a hop rather than beside it: both sides are on
+            // loopback, so addresses cannot tell them apart, but ports can.
+            state.forwardSourcePorts.push(upstream.localPort)
+            const channel = acceptTcpip()
+            state.forwardedChannels += 1
+            channel.pipe(upstream).pipe(channel)
+            channel.on('close', () => { try { upstream.destroy() } catch { /* gone */ } })
+            upstream.on('close', () => { try { channel.close() } catch { /* gone */ } })
+          })
+          upstream.once('error', () => { try { upstream.destroy() } catch { /* gone */ } })
+        })
+        client.on('session', (accept) => {
+          state.sessions += 1
+          const session = accept()
+          // Agent forwarding is a per-CHANNEL request (`auth-agent-req`) that
+          // arrives before the exec itself. Without a listener here ssh2 rejects
+          // it, which is what a hardened server (`AllowAgentForwarding no`)
+          // does — the default, so a suite that wants forwarding to succeed
+          // must opt in with `allowAgentForwarding: true`.
+          session.on('auth-agent', (acceptAgent, rejectAgent) => {
+            state.agentRequests += 1
+            if (options.allowAgentForwarding === true) acceptAgent()
+            else rejectAgent()
+          })
+          session.on('exec', (acceptExec, rejectExec, info) => {
+            const stream = acceptExec()
+            state.execs.push(info.command)
+            options.onExec?.({ command: info.command, stream })
+            // Default: a command that prints nothing and exits 0. A test that
+            // wants output or a failure supplies its own `onExec`.
+            if (options.onExec === undefined) stream.exit(0)
+            if (options.onExec === undefined) stream.end()
+          })
+          session.on('sftp', (acceptSftp) => {
+            const sftp = acceptSftp()
+            state.sftpChannels += 1
+            options.onSftp?.(sftp)
+            if (options.onSftp === undefined) {
+              // Answer the handful of requests a connection makes on its own.
+              sftp.on('OPEN', (reqid) => sftp.status(reqid, 0))
+              sftp.on('CLOSE', (reqid) => sftp.status(reqid, 0))
+              sftp.on('STAT', (reqid) => sftp.status(reqid, 2))
+              sftp.on('REALPATH', (reqid, p) => sftp.name(reqid, [{ filename: p, longname: p, attrs: {} }]))
+              sftp.on('OPENDIR', (reqid) => sftp.status(reqid, 0))
+              sftp.on('READDIR', (reqid) => sftp.status(reqid, 1))
+            }
+          })
+        })
+      })
+      // A client that throws must not take the process down with it.
+      client.on('error', () => {})
+    })
+
+    server.on('connection', (connection) => {
+      // Who dialed us, as an ephemeral port. See `forwardSourcePorts`.
+      const peerPort = connection._sock?.remotePort
+      if (typeof peerPort === 'number') state.peerPorts.push(peerPort)
+      // ssh2 forwards its inner net server's `connection` event, but the
+      // argument it forwards is the ssh2 `Connection`, not a socket — so
+      // nothing here can be destroyed directly. The raw socket is reached
+      // through each connection's `_sock` instead (see `dropAll`).
+      if (rejectRemaining.value > 0) {
+        rejectRemaining.value -= 1
+        // Destroy before the handshake: the client sees ECONNRESET, not a
+        // rejection, which is what an unreachable-in-practice host looks like.
+        connection._sock?.destroy?.()
+      }
+    })
+
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(port, options.bindHost ?? '127.0.0.1', () => {
+        server.removeListener('error', reject)
+        resolve()
+      })
+    })
+    boundPort = server.address().port
+    return server
+  }
+
+  let server = await listen(keyPair.private)
+
+  /** Destroy one ssh2 Connection's raw socket, or end it if the field moved. */
+  function drop (client) {
+    const raw = client._sock
+    if (raw !== undefined && typeof raw.destroy === 'function') raw.destroy()
+    else client.end()
+  }
+
+  return {
+    get port () { return boundPort },
+    get fingerprint () { return fingerprintOf(keyPair.public) },
+    get connections () { return state.connections },
+    get sessions () { return state.sessions },
+    get sftpChannels () { return state.sftpChannels },
+    /** Count of per-channel agent-forwarding requests seen. */
+    get agentRequests () { return state.agentRequests },
+    /** Every `direct-tcpip` request seen, in order. */
+    get forwardRequests () { return [...state.forwardRequests] },
+    /** How many of them became a live tunnel. */
+    get forwardedChannels () { return state.forwardedChannels },
+    /** Source port of each accepted connection (who dialed this server). */
+    get peerPorts () { return [...state.peerPorts] },
+    /** Every `tcpip-forward` request: what the client asked this host to bind. */
+    get reverseRequests () { return [...state.reverseRequests] },
+    /** Ports this server is listening on BECAUSE the client asked (ssh -R). */
+    get reversePorts () { return [...state.reverseListeners.keys()].map(key => Number(key.split(':').pop())) },
+    /** How many connections arrived on those listeners. */
+    get reverseConnections () { return state.reverseConnections },
+    /** Local port each forwarded tunnel left from. */
+    get forwardSourcePorts () { return [...state.forwardSourcePorts] },
+    get execs () { return [...state.execs] },
+    /**
+     * How many client connections are open RIGHT NOW.
+     *
+     * The distinguishability that matters for a jump chain's teardown: the
+     * target's socket is one, and each bastion's is another. A record closed
+     * without closing its hops leaves this above zero with nothing to show for
+     * it — exactly the leak a "the workspace looks closed" check would miss.
+     */
+    get liveConnections () { return clients.size },
+    /** Every live connection destroyed, as a network blip would. */
+    dropAll () {
+      for (const client of clients) drop(client)
+    },
+    /**
+     * Present a different key on the SAME port to the next connection.
+     *
+     * Rebuilds the listener: ssh2 parses `hostKeys` in its constructor, so the
+     * key cannot be swapped in place. Existing connections are dropped first,
+     * which is the sequence a reinstalled host produces.
+     */
+    async setHostKey (pemPrivate, publicLine) {
+      keyPair = { private: pemPrivate, public: publicLine }
+      for (const client of clients) drop(client)
+      clients.clear()
+      const previous = server
+      await new Promise((resolve) => previous.close(resolve))
+      server = await listen(pemPrivate, boundPort)
+    },
+    /** Refuse the next `count` connections at the socket level. */
+    rejectNext (count) {
+      rejectRemaining.value = Math.max(0, Number(count) || 0)
+    },
+    /** Stop listening and drop everything. */
+    async close () {
+      if (closed) return
+      closed = true
+      // Reverse listeners are separate net.Servers holding the event loop open.
+      // Leaving them behind makes a suite that prints every PASS hang instead
+      // of exiting — a failure mode reported as "no result" rather than as a
+      // wrong one, which is strictly harder to diagnose.
+      for (const [, listener] of state.reverseListeners) {
+        try { listener.close() } catch { /* already closed */ }
+      }
+      state.reverseListeners.clear()
+      for (const client of clients) drop(client)
+      clients.clear()
+      await new Promise((resolve) => server.close(resolve))
+    },
+  }
+}
+
+/**
+ * A second host key, for the mismatch case.
+ *
+ * The returned key is PARSED before it is handed out. `generateKeyPairSync` has
+ * been seen to return an unusable PEM under load (ssh2 then throws
+ * "Cannot parse privateKey: Malformed OpenSSH private key" from the Server
+ * constructor, which surfaces as an intermittent suite crash rather than a
+ * readable failure). A key that cannot be parsed is not a fact about the plugin
+ * under test, so it is regenerated instead of propagated.
+ *
+ * @param {string} pluginRoot - where to resolve ssh2 from.
+ * @returns {{private: string, public: string, fingerprint: string}} the key pair.
+ */
+export function freshHostKey (pluginRoot) {
+  const ssh2 = loadSsh2(pluginRoot)
+  const { utils } = ssh2
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const pair = utils.generateKeyPairSync('ed25519')
+    try {
+      // The constructor is where ssh2 parses `hostKeys`; parsing here proves
+      // the key is usable by the same code path that will consume it.
+      new ssh2.Server({ hostKeys: [pair.private] })
+    } catch {
+      continue
+    }
+    return { private: pair.private, public: pair.public, fingerprint: fingerprintOf(pair.public) }
+  }
+  throw new Error('could not generate a host key ssh2 is willing to parse (5 attempts)')
+}

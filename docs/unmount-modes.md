@@ -1,10 +1,10 @@
 # 工作区卸载：停用、归档与重新启用
 
-> 状态：**已实施**（见 CHANGELOG 的 `[未发布]` 段落）。本文描述的 `detach` /
+> 状态：**已实施**（见 CHANGELOG 的 0.2.4 段落）。本文描述的 `detach` /
 > `enable` 两条路径、归档语义与全局停机围栏均已落地并通过测试。
 
-一句话定位：**「卸载」不删除任何东西——它让工作区停用（会话归档、读写执行全停），
-保留工作区记录，随时可以一键启用回来。**
+一句话定位：**「卸载」不删除任何东西——它让工作区停用（读写执行全停），
+默认连工作区记录和会话一起保留，随时可以一键启用回来。**
 
 ---
 
@@ -12,8 +12,8 @@
 
 | 问题 | 答案 |
 | --- | --- |
-| 卸载做了什么？ | 摘挂载 + 标记停用 + **归档**会话 |
-| 会话被删了吗？ | **没有**。归档只是从会话列表隐藏，文件与工作区记账位置都保留 |
+| 卸载做了什么？ | 摘挂载 + 标记停用（`detach` 到此为止） |
+| 会话被删了吗？ | **没有**。`deregister` 才归档，且归档只是从会话列表隐藏，文件与工作区记账位置都保留 |
 | 工作区记录还在吗？ | 默认在（`detach` 模式），所以侧边栏那一行仍然可见（置灰） |
 | 卸载后还能连上远程吗？ | SSH 连接保留（主机面板、`ssh_workspace_exec` 不带 cwd 仍可用）；**工作区内的读写、列目录、命令、终端、子进程、传输全部拒绝** |
 | 重启后会不会自己复活？ | 不会。停用清单持久化在 store 里，启动恢复循环会跳过 |
@@ -21,25 +21,49 @@
 
 ---
 
-## 二、三种模式的语义
+## 二、两种模式的语义
 
-`POST /api/dsh-ssh-workspace/unmount` 与 `ssh_workspace_unmount` 工具共用同一套模式，
-但**工具只暴露前两种**（`forget` 是给旧调用方保留的 HTTP 模式，见下）：
+`POST /api/dsh-ssh-workspace/unmount` 与 `ssh_workspace_unmount` 工具共用同一套模式：
 
-| 模式 | 摘挂载 | 停用标记 | 工作区记录 | 会话 | 可恢复 |
-| --- | --- | --- | --- | --- | --- |
-| `detach`（默认） | ✅ | ✅ | **保留** | 归档 | ✅ 一键启用 |
-| `deregister` | ✅ | ✅ | 删除 | 归档 | 会话可取消归档，记录需重新挂载 |
-| `forget` | ✅ | **清除** | 删除 | 归档 | 相当于旧版「彻底移除」 |
+| 模式 | 摘挂载 | 停用标记 | 工作区记录 | 侧栏那一行 | 面板那一行 | 会话 | 可恢复 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `detach`（默认） | ✅ | ✅ | **保留** | 保留，置灰**且按钮不可点** | 保留，可「启用」 | **保留，不归档** | ✅ 一键启用 |
+| `deregister` | ✅ | **清除** | 删除 | **消失** | **消失** | 归档 | 会话可取消归档，记录需重新挂载 |
 
 默认是 `detach`，因为它是唯一「一次点击就能回来」的模式。请求体里的
 `deregister: true` 仍被识别为 `deregister` 模式，避免旧调用方静默降级。
+`forget` 作为旧拼写被接受，**归一化**为 `deregister`——两者做的是同一件事，保留一个
+近乎重复的第三种模式，正是「面板能为一台已不存在的记录提供启用按钮」这个缺陷的成因。
 
-`forget` 必须**同时**清掉持久清单与运行时围栏。只清清单会留下一个「面板里没有这一行、
-但运行时仍拒绝一切操作」的工作区——而「启用」按钮正好长在 `forget` 清空的那份停用
-列表上，用户将无从恢复。这一条有回归测试（`routes-smoke`）。
+### 归档跟随「删除记录」，不是一个独立开关
 
-`archiveSessions: false` 可以跳过归档（用户只想暂时关掉工作区，不想动会话列表时）。
+这是本文最容易搞反的一条，也是实际返工过的地方。
+
+`detach` **保留**工作区记录，所以侧边栏那个分组仍在。分组里的东西就是它的会话——把
+会话归档等于把用户**特意保留**的那个分组清空：行还在，点开却是空的。这不叫「保留」，
+比直接删掉更让人困惑。因此：
+
+| 请求 | 归档 | 理由 |
+| --- | --- | --- |
+| `detach`（默认） | 否 | 记录与会话一起保留，分组保持原样 |
+| `deregister` | 是 | 记录已删，分组即将消失，会话不再有任何归属处 |
+| 显式 `archiveSessions: true/false` | 按给定值 | 显式意图优先，允许「保留记录但隐藏会话」这类少见组合 |
+
+旧实现把默认值写成 `archiveSessions !== false`（即默认归档），于是不勾选「同时删除工作区
+记录」也会把会话藏起来。测试已经把这条钉死：`detach archives nothing, so the kept group
+stays populated`，反向验证过去掉默认值后该断言变红。
+
+### `deregister` 必须两边一起删
+
+「同时删除工作区记录」的验收口径是：**侧栏那一行与面板那一行都必须消失**。
+
+- 删掉工作区记录 → 侧栏那一行消失（这是 DSH 自己的行为）；
+- 面板的「已停用」分区由**持久化的停用标记**驱动 → 标记不清，这一行就还在。
+
+只删记录、不清标记会留下一个「面板里挂着启用按钮、实际任何地方都不存在」的工作区，
+而这个路径的运行时围栏又拒绝一切操作——用户将无从恢复。所以 `deregister` 会同时清掉
+**持久清单**与**运行时围栏**两处标记。这一条有回归测试（`routes-smoke`，含反向验证：
+把清除逻辑去掉后 4 条断言变红）。
 
 ---
 
@@ -61,7 +85,9 @@ engine.store.entryStore.disableWorkspace(workspacePath)
 顺序是刻意的：如果先打停用标记再摘根，两步之间会存在一个「既在服务又已停用」
 的窗口，围栏答案取决于检查顺序。`disableRoot` 一次做完，不留中间态。
 
-### 2. 归档会话
+### 2. 归档会话（仅 `deregister`）
+
+`detach` 到此为止，**不进行这一步**——它保留了工作区分组，所以会话必须留下。
 
 ```js
 // lib/routes.js archiveWorkspaceSessions
@@ -96,8 +122,11 @@ for (const sessionId of entity.sessionIds ?? []) {
 ### 3. 可选地删除工作区记录
 
 ```js
-if (mode === 'deregister' || mode === 'forget') {
+if (mode !== 'detach') {
   await registry.delete(entity.id)
+  // 两边标记一起清，见 §二
+  router.enableRoot(workspacePath)
+  engine.store.entryStore.enableWorkspace(workspacePath)
 }
 ```
 
@@ -175,21 +204,46 @@ if (detached) row.setAttribute('data-sshwsp-disabled', '1')
 else if (row.hasAttribute('data-sshwsp-disabled')) row.removeAttribute('data-sshwsp-disabled')
 ```
 
-配套 CSS 只做视觉：
+**会话行也必须一起标记**，这是曾经漏掉的一半。会话行是
+`[data-row-key^="session:<id>"]`，**它不携带任何工作区信息**——只有会话 id。
+所以成员关系必须在还持有工作区时解析：
 
-```css
-[data-sshwsp-disabled="1"] { opacity: 0.5; }
-[data-sshwsp-disabled="1"]::after { content: "⏻"; ... }
+```js
+for (const sessionId of Array.isArray(item.sessionIds) ? item.sessionIds : []) {
+  disabledSessionIds.add(String(sessionId))
+}
 ```
 
-**不拦点击**。拦截 DSH 自己的行点击处理器属于和宿主抢控制权，它一改版就崩。
-点击仍然会打开那个工作区，然后得到一个明确的「工作区已停用」错误——比一个
-神秘失效的按钮好。真正的入口是插件面板里的「启用」按钮。
+服务端 `/status` 因此必须带 `sessionIds`（`lib/routes.js`），否则客户端拿到的工作区
+条目没有成员列表，只能把标题那一行置灰，而它下面的每个会话仍然完全可点——工作区
+的 I/O 围栏已关，会话却是活的，这是最糟的组合。
+
+配套 CSS 分两层，作用域按行键区分：
+
+```css
+/* 通用层：任何被标记的行都变暗 */
+[data-sshwsp-disabled="1"] { opacity: 0.5; }
+/* 电源图标只给工作区标题：给每行会话都盖一个，读起来像"N 个开关" */
+[data-row-key^="workspace:"][data-sshwsp-disabled="1"]::after { content: "⏻"; ... }
+/* 工作区标题的按钮失效，但标题本身仍可点 */
+[data-sshwsp-disabled="1"] button,
+[data-sshwsp-disabled="1"] [role="button"] { pointer-events: none; opacity: 0.4; }
+/* 会话行整行不可达：行本身就是"打开会话"那个控件 */
+[data-row-key^="session:"][data-sshwsp-disabled="1"] { pointer-events: none; cursor: not-allowed; }
+```
+
+**工作区标题不拦点击**。拦截 DSH 自己的行点击处理器属于和宿主抢控制权，它一改版就崩。
+展开标题仍然可用——那是用户看清「停用保留了哪些会话」的唯一途径。真正的入口是插件
+面板里的「启用」按钮。
+
+**会话行整行拦**，因为这里的情况不同：行本身就是点击目标，只把里面的按钮置灰会把
+唯一要紧的动作留着。键盘路径由 `setElementInert()` 补上（`pointer-events` 只挡鼠标）。
 
 身份匹配需要 id 与标题两套集合，因为不同界面给的信息不同。这里有个容易踩的坑：
 `readLiveWorkspaces()` 会从 DSH 自己的 store 重新收集身份，而那个 store **不知道**
 本插件的停用清单。所以停用路径单独存在 `knownDisabledPaths` 里，每次重新收集时
-传回去，否则置灰会在下一次变更回调时消失。
+传回去，否则置灰会在下一次变更回调时消失。会话成员列表同理——DSH 的 store 里
+每个工作区视图都带 `sessionIds`，重新收集时一并取，不会丢。
 
 ### 启用
 
@@ -253,7 +307,7 @@ if (detachedSet.has(path)) continue
 
 ## 七、测试
 
-新套件 `tests/detach-smoke.mjs`（**62 项**）覆盖：
+新套件 `tests/detach-smoke.mjs`（**73 项**）覆盖：
 
 | 分组 | 内容 |
 | --- | --- |
@@ -270,14 +324,39 @@ if (detachedSet.has(path)) continue
 **正是那层围栏**，它会拒绝停用工作区内的任何读取，于是「启用」在结构上永远失败。
 两处都改为走原始连接（`engine.withSftp`）直接 `stat`，与 HTTP 路由的做法一致。
 
-`routes-smoke` 增加 20 项（模式默认值、归档成功/失败上报、`deregister: true` 兼容、
-启用流程、两条新路由的回环围栏）。
+`routes-smoke` 现在 **176 项**（本组增加 22 项：模式默认值、`detach` 不归档而
+`deregister` 归档、显式 `archiveSessions` 优先于模式、归档成功/失败上报、
+`deregister: true` 兼容、启用流程、两条新路由的回环围栏；此后下载失败的状态码
+修复又加了 3 项），其中 3 项钉住 `/status`
+必须下发 `sessionIds`：成员列表原样透传、强制转成字符串（会话行按文本匹配 id）、
+缺字段退化为空数组而不是 `undefined`（旧宿主可能整个省略）。
 
-`boot-smoke` 在**真实主机**上验证了完整往返：挂载 → 卸载 → 状态里出现在 disabled →
-读被拒 → 启用 → 回到 mounted。
+`client-shape-smoke` 另加一组**行为**测试，而不只是字符串匹配：它把真正的
+`collectRemoteWorkspaces` 抽出来运行，断言停用工作区的会话进入 `disabledSessionIds`、
+在服务中的工作区会话**不**进入、缺 `sessionIds` 的工作区不抛错。原来的 bug 是漏了
+一条赋值，不是漏了一个名字——grep 名字抓不到它。
 
-全套：`node tests/run.mjs` **22/22** 通过（含用真实 DSH 框架跑的
-lifecycle / boot / tool-schemas，共 160 项 schema 断言）。
+同一套件还新增**语法检查**：所有其它断言都把 bundle 当**文本**读，所以一个根本
+解析不过的文件照样能让它们全绿——这真的发生过（CSS 模板字符串里一个游离的反引号
+提前结束了字面量）。`node --check` 只解析不执行，保持零依赖。
+
+`client-shape-smoke` 新增一组覆盖「置灰的行必须真的不可操作」：`pointer-events`
+规则存在、选择器是通用的 `button`（那些按钮是 DSH 画的）、工作区标题本身仍可点击
+（否则 `detach` 保留的会话就没法看清有哪些）、会话行整行不可点、键盘路径也被摘掉
+（`inert` + `tabindex`）、以及撤销时恢复原有属性值而不是一律删除。
+
+同一套件还钉住**悬停提示**这个唯一的说明渠道：中文提示必须同时写出「未勾选 → 记录与
+会话都保留」和「勾选 → 记录删除、会话归档」两个分支；英文提示按**自身文本**校验
+（`archived` 在别的键里也出现，按整包 grep 会让「只写了可逆那半」的英文提示蒙混过关）；
+提示必须同时挂在「卸载」与「确认卸载」两个按钮上（后者出现时前者的 `title` 已经不在
+视野里）；且不得在行内另起一行重复同一句话。三条都反向验证过：放回旧文案后 2 条变红，
+把常驻行加回去后「not duplicated」变红。
+
+全套：`node tests/run.mjs` 当前 **44/44** 套件。裸检出（无环境变量）下 38 个套件运行、
+合计 **1782** 项断言（实测 2026-11-01）；`lifecycle` / `boot` / `tool-schemas` / `projection-real` 与
+`live` / `acceptance` 共 6 个套件需要 `DSH_CORE_ROOT` 或真实主机，未提供时明确 SKIP
+（`DSH_CORE_ROOT` 指向真实装配树时这 6 个跑起 4 个，合计 **2005** 项；只剩 `live` / `acceptance` 两个套件真正未跑，但 `boot-smoke` 会为它自己那段需真机的远端检查打一行 SKIP，而 runner 是按“有没有 SKIP 行”判定套件状态的，所以尾行会写成“41 passed, 3 skipped”；「跳过套件数」与「SKIP 行数」是两个不同的量，见 [development.md](./development.md)）。
+（其中 `tool-schemas` 单独是 160 项 schema 断言，`lifecycle` 16 项、`boot` 29 项——别把这几个套件当成「合计 160 项」。）本组相关的 `probe-smoke` 20 项、`detach-smoke` 73 项。
 
 ---
 

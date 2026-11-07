@@ -369,6 +369,63 @@ try {
     } finally { dispose() }
   }
 
+  // --- a deliberate disconnect looks like a manual close ------------------
+  //
+  // The user's wording: "点击 ssh 断开时，如果端口是开启状态，断开的现象和提示要和
+  // 手动断开端口的一致". The two paths reach the same tunnel from different intents,
+  // so this pins that they LEAVE it in the same state rather than merely closing
+  // the listener. The failure line is the visible half: an unplanned drop says
+  // "connection lost", and a deliberate disconnect that reused that path would
+  // report a fault the user caused on purpose.
+  {
+    const { store, dispose } = makeStore()
+    try {
+      const { record, engine } = fakeEngine(echo.port)
+      const { forwards, saved } = makeController(store, { engine })
+      const port = await pickFreePort()
+      store.putForward({ id: 'fwd-cut', alias: 'alpha', remotePort: echo.port, localPort: port, enabled: true })
+      await saved.openById('fwd-cut')
+      check('a tunnel is live before the deliberate disconnect', saved.list()[0].live === true)
+
+      const closed = saved.closeAlias('alpha')
+      const row = saved.list()[0]
+      check('a deliberate disconnect reports the tunnels it closed', closed === 1, String(closed))
+      check('a deliberate disconnect stops the listener', row.live === false, JSON.stringify(row))
+      check('a deliberate disconnect turns the stored intent off', row.enabled === false, JSON.stringify(row))
+      check('a deliberate disconnect leaves no failure to explain', row.error === undefined, JSON.stringify(row.error))
+      check('...and the store agrees the intent is off', store.forwards().items[0].enabled === false,
+        JSON.stringify(store.forwards().items[0]))
+      check('a deliberate disconnect releases the hold', record.holds === 0, String(record.holds))
+
+      // The manual close must land on exactly the same row state, or "same as
+      // closing the port by hand" would be an assertion about wording only.
+      await saved.openById('fwd-cut')
+      const manual = saved.closeById('fwd-cut')
+      const deliberate = row
+      check('the two paths agree on every field the panel reads',
+        JSON.stringify({ live: manual.live, enabled: manual.enabled, error: manual.error })
+          === JSON.stringify({ live: deliberate.live, enabled: deliberate.enabled, error: deliberate.error }),
+        `manual=${JSON.stringify(manual)} deliberate=${JSON.stringify(deliberate)}`)
+
+      // A transient tunnel has no stored row; it must still be closed, and it
+      // must not be counted twice or resurrected as a saved one.
+      const transient = await forwards.open('alpha', { remotePort: echo.port, localPort: 0 })
+      const withTransient = saved.closeAlias('alpha')
+      check('a deliberate disconnect also closes transient tunnels', withTransient === 1, String(withTransient))
+      check('...leaving no listener behind', forwards.list().length === 0, JSON.stringify(forwards.list()))
+      check('...and not turning the transient tunnel into a saved row',
+        store.forwards().items.length === 1, JSON.stringify(store.forwards().items.map(item => item.id)))
+      check('closing a host with no tunnels is a no-op', saved.closeAlias('nobody') === 0)
+
+      // An unrelated host's tunnel must survive — this closes by alias, not all.
+      await saved.openById('fwd-cut')
+      const elsewhere = await forwards.open('beta', { remotePort: echo.port, localPort: 0 })
+      check('another host\'s tunnel is untouched', elsewhere.alias === 'beta' && saved.closeAlias('alpha') === 1)
+      check('...and it is still live', forwards.list().some(entry => entry.alias === 'beta'))
+      forwards.dispose()
+    } finally { dispose() }
+  }
+
   // --- remembering a transient forward -----------------------------------
   {
     const { store, dispose } = makeStore()

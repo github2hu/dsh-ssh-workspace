@@ -49,15 +49,69 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 会被同一 cwd 再次判为远端，形成无限互相委派（表现为预览点击后
 `Maximum call stack size exceeded`）。
 
-### 写入围栏与符号链接裁决
+### 写入围栏、沙箱模式与符号链接裁决
+
+**沙箱模式与挂载根是两件事**，回答的问题不同，因此用不同的错误码：
+
+| 围栏 | 问题 | 拒绝码 | 宿主如何处理 |
+| --- | --- | --- | --- |
+| 沙箱模式 | 这个会话允许写吗（`read-only`，或任何读不懂的模式） | `FS_SANDBOX_DENIED` | 改写成 `[sandbox: …]` 标记 + 升权提示 |
+| 挂载根（含该主机的 `/tmp`） | 这个目录被服务吗 | `FS_OUTSIDE_WORKSPACE` | 原文直达模型 |
+| 工作区停用 | 用户把它关了吗 | `FS_PERMISSION_DENIED` | 原文直达模型 |
+
+写围栏问「被服务吗」时用的是 `writeFenceRoots`：原始挂载根**加上该主机的 `/tmp`**，与本地
+`writableRoots` 列出常量 `/tmp` 保持一致。放宽只在写围栏生效，且只对已有挂载根的主机生效；
+读探针、`node:fs` 桥、停用围栏继续按原始挂载根作答，所以 `stat ssh://host/tmp` 一类的身份
+探针不会因为这道放宽而多出一批可答的路径。
+
+模式判定必须在远端重做一次，因为本机的实现（`SandboxedFileSystem.checkedTarget`，见
+`@deepseek-ai/dsh-fs-sandbox`）是**原型上一个本地方法**：插件的同名自有属性覆盖了
+`writeText` / `editText`，远端分支从不调用它。少了这一步，`read-only` 会话照样能改写
+远端文件，且没有任何提示——而模型的系统提示恰好要求它「不要仅凭策略就拒绝，先试」，
+于是这次越权在它看来是完全合规的成功。
+
+模式取自 `writeText` / `editText` 的**第五个参数** `sandboxPolicy`（宿主的 `write` /
+`edit` 工具都会传），缺席时回落到后端 `sandboxMode`（部署默认）——缺席不等于「不限制」，
+它表示一次无 agent 的调用，本地后端对同样的调用也用部署默认。
+
+`workspace-write` 在远端**比较会话自己的 workspace root**，与本地一致：本地后端用
+`writableRoots(policy)` 判定，第一项是 `policy.workspaceRoot`。这个值由
+`SandboxPolicyService.resolve` 返回 `session.header.cwd` 原样得到——远端会话就是那个
+`ssh://` 拼写，可以直接与目标比较。落在会话工作区之外（且不在该主机 `/tmp` 之下）的写入返回
+`FS_SANDBOX_DENIED`，文案点名会话工作区与出路；跨主机的已挂载根同样被拒。
+
+`workspace-write` / `danger-full-access` **之外**的任意模式字符串一律拒绝，与本地一致：本地对读不懂的
+模式走 containment 分支且 `writableRoots` 返回 `[]`。此前远端会跳过模式与范围两道围栏，同一个输入
+「本地收紧、远端放开」。`undefined`（策略服务完全缺席）仍是「不受限」而非拒绝。
+
+（此前这里写的是「不比较，因为那台机器的路径对远端无意义」。那句话是错的：实测
+`resolve()` 返回的就是远端拼写，可用；而且不比较会让一个会话能写同一主机上的兄弟根，
+甚至另一台主机的根——本地做不到的事。）
+
+约束不了的是**命令**：限制一个进程需要内核边界，它跨不过 SSH，所以 `workspace-write`
+下远端命令不会被收窄到工作区。这是如实记录的限制。
+
+`node:fs` 桥（`fs-shim.js`）刻意不看模式：它服务宿主自己的记账调用（新建会话 cwd 的
+`mkdir`、注册表的 `stat`/`realpath`、变更追踪的快照拷贝），本地同一批调用同样的不受
+`ctx.fs` 沙箱约束；而且它只看得到部署默认、看不到会话级覆盖，据此判定会给出错误结论。
+模型面向的写路径走 `ctx.fs` 与插件自己的工具，那条路上模式是生效的——但插件工具不经
+`ctx.fs`，所以它们各自解析 `ctx.sandboxPolicy.resolve({ session })`（见 `tools.js` 的
+`sessionSandboxPolicy`，它是 `mode-gate.js` 里 `sessionPolicyOf` 的薄适配器，好让
+「解析失败」这个原因随策略一起传下去）：`ssh_workspace_transfer` 的上传被门禁，下载不被门禁。
+上传现在四道围栏与 `write` / `edit` 完全同步——模式（`writeModeRefusal`）、范围
+（`workspaceWriteScopeRefusal`）、挂载根与符号链接落点（`fenceUploadTarget`），此前缺的后两道
+实测能把字节落到未挂载的 `/etc`，正是「两条写路径不会分叉」的反例。浏览器面板的上传路由同样过
+后两道围栏，但**不过模式与范围**——那是用户自己的动作，模式管的是 agent。
 
 词法围栏（`isRemotePathUnder`，规范化后做前缀比较）只是快路径；写 / 删
 操作在落盘前还做一次**服务器 `realpath` 裁决**（`assertFencedRealpath`，
 `lib/remote-fs.js`）：目标**父目录**经 `sftp.realpath` 解析后必须仍落在已
-挂载根内，否则 `FS_SANDBOX_DENIED`。没有这一步时，围栏内一个指向外部的
+挂载根内，否则 `FS_OUTSIDE_WORKSPACE`。没有这一步时，围栏内一个指向外部的
 符号链接（或中间目录为符号链接）会让词法判断与真实落点不一致，写入 / 删除
 即可越界。覆盖点为所有写、删入口——原子替换（`#publish`）、`copyFile` 直写
-与 `rm` 桥、`mkdir`；realpath 读取失败按 `FS_NOT_FOUND` 语义处理。
+与 `rm` 桥、`mkdir`，以及 `ssh_workspace_transfer` 的上传与浏览器面板的上传路由
+（`transfer.js` 的 `fenceUploadTarget`：挂载根 + realpath 两道一起，在任何字节落盘之前）；
+realpath 读取失败按 `FS_NOT_FOUND` 语义处理。
 **读取不受围栏限制**，因此不做此校验；元数据缓存（见下）同样永不服务围栏
 校验与写路径。
 
@@ -120,6 +174,10 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 本机文件沙箱不跨 SSH，spec 上的 `sandboxPolicy` 对远端 workdir 不适用，远端
 命令以远端登录用户的完整权限运行。
 
+> **文件写入与命令执行不同**：`ctx.fs` 的远端分支**会**读取 `sandboxPolicy.mode`
+> （见「沙箱模式与挂载根是两件事」）。这里的「不适用」只指 `ctx.shell` /
+> `ctx.subprocess` 的 spec，不适用于 read / write / edit。
+
 引擎的 `exec` 输出按 **UTF-8 流式解码**（每流一个 `StringDecoder`），多字节
 字符跨 chunk 边界不再乱码；输出上限按**字节**记账，截断回退到完整字符边界
 并标注 `…[output truncated]`。**断线重试**：命令尚未产生任何输出、且未超时 /
@@ -173,7 +231,8 @@ receiver 原样转发。
 
 | 桥 | 行为 |
 | --- | --- |
-| `fs.mkdir` / `stat` / `lstat` / `realpath` | 走 SFTP；`mkdir` 是写操作、受挂载围栏约束；`realpath` 返回词法规范化的 `ssh://` 拼写（不请求服务器 realpath），与会话 header、工作区登记保持一致 |
+| `fs.mkdir` | 走 SFTP；写操作、受挂载围栏约束 |
+| `fs.stat` / `lstat` / `realpath` | **身份探针**，见下节——有活连接时走 SFTP 取真实属性，无连接时对本插件挂载过的路径给出词法 / 合成答案，**绝不因探测而拨号** |
 | `fs.readdir` | 走 SFTP；名字数组与 `withFileTypes` 的 `Dirent` 两种形态都复刻——类型判别取条目自身属性，符号链接既非文件也非目录（`@` 补全因此不会下钻目录符号链接）；`recursive` 明确 `ENOTSUP`。`@` 补全的远端扫描即此路径 |
 | `fs.copyFile` | ssh 源经 SFTP 读（错误按 errno 映射，`FS_NOT_FOUND` → `ENOENT`）；目标为本机 scratch 时另镜像写远端（`GIT_INDEX_FILE` 指向的文件必须真在远端） |
 | `fs.open(path, 'r')` | 只读 SFTP FileHandle（`stat` / `read` / `readFile` / `close`；单次读封顶 256KB），`inFlight` 钉住连接防止空闲回收；写模式同步 `EINVAL` |
@@ -182,8 +241,73 @@ receiver 原样转发。
 | `path.resolve` / `join` | 含 `ssh://` 时折叠为规范拼写——绝对 POSIX 参数替换远端路径、相对段追加、Windows 绝对参数复位回本机；左侧参数被绝对参数吞掉，与 node 语义一致 |
 | `path.relative` | 同别名返回 POSIX 相对段（变更面板的 `display` 即工作区相对路径）；混合操作数返回右操作数，`isInside` 因此判「不在内部」 |
 
+### 身份探针不得拨号
+
+`stat` / `lstat` / `realpath` 是被**宿主主动**调用的，而且发生在用户操作之前：
+`WorkspaceRegistry` 在 `init` 阶段对每个会话 header 的 cwd 做
+`realpath` + `stat`（`indexHeader`），侧边栏渲染时还会问每个工作区的状态。
+这三条原本都经 `engine.withSftp()` → `engine.acquire()`，而 `acquire()` **就是建立连接**。
+
+后果是：**只要启动 DSH，所有已挂载工作区涉及的主机都会被连上**。用户离开时是全断开
+状态，重启后却发现每条连接都活着——连接状态没能按原样恢复，而是被自己的元数据查询
+反向"打开"了。
+
+现在的规则按"有没有活连接"分岔，而判活用的是 `engine.pool` 而不是 `acquire()`：
+
+| 情况 | 行为 |
+| --- | --- |
+| 已有活连接 | 走 SFTP 取**真实**属性（`stat` 仍能报出"远端已删除"） |
+| 无活连接，路径在已挂载根内 | `stat`/`lstat` 给出合成的目录 `Stats`；`realpath` 直接返回词法规范拼写 |
+| 无活连接，路径在挂载根外 | `ENOENT` |
+
+中间一行是刻意的：DSH 用这些探针判断**会话是否仍属于某个工作区**，在那里抛错（而不是
+明确 miss）会让 registry 把会话从记账里剪掉——卸载一个工作区不该顺手改写它的会话归属。
+合成答案只声称"是目录"，不谎报大小或时间戳；挂载那一刻插件已经确认过它确实是目录。
+
+回归测试在 `tests/probe-smoke.mjs`（20 项），断言直接数 `withSftp` / `acquire` 的调用
+次数：把判活改回 `acquire()` 后 6 条变红。
+
+
 `node:path` 的补丁覆盖默认导出与 `win32` / `posix` 命名空间（同一对象去重），
 卸载时逐项复原；非 `ssh://` 调用必须逐字节等价于原实现，这是该层的回归底线。
+
+### 一处补丁打不到的地方：按值捕获的 schema
+
+`syncBuiltinESMExports()` 更新的是 ESM **绑定**，所以「在调用时读绑定」的代码都会看到补丁。
+但 `@deepseek-ai/dsh-working-directory` 把谓词当**值**交给了 zod：
+
+```js
+const directorySchema = z.string().min(1).refine(isAbsolute).nullable()
+```
+
+这个 schema 在服务构造函数里建好，而 `working-directory` 在 roster 中排在插件之前，所以它
+捕获的永远是原始 `isAbsolute`。后果是：会话头校验能过（`dsh-session` 读绑定），但**读历史**时
+`sessionProjections.restore` 的 `viewSchema.parse(header.cwd)` 会失败，浏览器显示
+`历史加载失败：failed to project session … Invalid input（gateway/internal）`——错误链一路
+穿透到 gateway，提示里看不出真正原因。
+
+插件不去改部署自带的 bundle（升级即失效），而是在 `lib/patch-projection.js` 里把**已注册**的那个
+单元的两个 schema 换成惰性判定：`ssh://` 直接放行，其余原样交给原 schema。因为每个读路径都经
+`def.stateSchema.parse` / `def.wire.viewSchema.parse`，替换这两个成员即覆盖 `restore`、
+`viewCheckpoint`、`snapshot`、`cachedSnapshot`、`hydrate` 与变更推送。`register` 同时被包一层，
+以覆盖「插件先加载、单元后注册」的重载/测试顺序。
+
+放宽只有 `ssh://` 一种形态：相对路径与空串照旧被拒，`null` 照旧通过，其它投影单元不动。
+回归测试是 `tests/projection-relax-smoke.mjs`（73 项，逻辑）与 `tests/projection-real-smoke.mjs`
+（18 项，真实 `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序
+装配）。两者的反向验证都做过：禁用修复后分别有 9 条与 3 条断言变红。
+
+这是一条**上游临时补丁**（`UPSTREAM-1-working-directory-isAbsolute`），不是插件的能力：
+上游把 `refine(isAbsolute)` 改成 `refine((value) => isAbsolute(value))` 后它就该消失。
+补丁会自己发现这一点——安装时先用一个 `ssh://` 值探测已注册的 schema，把结论记成一个显式状态
+（`fixed` / `broken` / `pending` / `already` / `unprobeable` / `disabled`），而**不是**一个布尔：
+"探不到宿主" 与 "宿主仍然是坏的" 必须能区分开，否则补丁静默失效时没有任何信号。
+
+结论经引擎的 `noteUpstreamWorkaround()` 落到 `ssh_workspace_status` 的 `upstreamWorkarounds`
+与一条 `upstream` 事件上——**不走 `ctx.logger`**，因为本部署没有 console exporter，
+写进 logger 等于写进注释（见 [diagnostics.js](../lib/diagnostics.js) 的模块说明）。
+登记与删除步骤见 [upstream-workarounds.md](./upstream-workarounds.md)，
+模式本身见 [upstream-workaround-pattern.md](./upstream-workaround-pattern.md)。
 
 ## 工作区登记
 
@@ -292,6 +416,34 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
 | keepalive | 15s | `engine.keepaliveIntervalMs` |
 | 空闲回收 | 30 分钟（sweeper 每 60s 扫一遍，有请求在飞不回收） | `engine.idleTimeoutMs` / `engine.sweepIntervalMs` |
 | 主机变更 | `forget(alias)` 丢弃旧连接，下次操作按新配置重连 | — |
+| 主动断开 | `hosts/disconnect` 先 `savedForwards.closeAlias(alias)`（逐条走 `closeById`，与端口行「断开」同一条路径）再 `forget(alias)`，响应 `closedForwards` 报告拆了几条隧道 | — |
+| 测试连接 | `test` 连一次即 `forget(alias)` 释放（被转发的 `holds` 钉住时不释放） | — |
+| 后台重连 | 1s 起指数退避、60s 封顶、默认不限次数 | `engine.reconnect.baseDelayMs` / `maxDelayMs` / `maxAttempts` / `jitter`（`false` 关闭） |
+
+### 后台重连（`lib/reconnect.js`）
+
+每个别名一台小状态机，由**连接意外关闭**驱动，不依赖「下一次操作」：
+
+- **触发**：`client` 的 `close` 事件发现该记录**仍在池中**就武装（所有主动路径——`forget`、
+  `sweep`、被替换的记录——都先摘池再 `end()`，所以「还在池里」等价于「不是我们关的」）。
+  前台操作连接失败时也会把别名交给它，这是合盖唤醒后最常见的路径。
+- **停止规则比延迟阶梯更重要**：每次尝试前重新问 `#isWanted(alias)`——已挂载根、
+  `holds > 0`、或注册的额外谓词（`addWantedCheck`，目前是「该主机有 `enabled` 的保存转发」）。
+  三者皆无就停，所以卸载最后一个工作区不会被后台拨号。不可恢复的错误（未知别名、
+  读不到私钥、主机密钥不匹配）标记 `fatal` 后立刻停止，不每分钟重复同一个失败。
+- **恢复消费者**：`onReconnected` 只由后台循环调用（前台 `acquire` 不调用，否则每次首次连接
+  都像一次恢复而重开用户关掉的隧道），当前用途是重开该主机 `enabled` 的保存转发；文件系统
+  seam 与持久 shell 在下次使用时自行重连。
+- **可观测**：每轮写 `reconnect` 事件（前 3 次、之后每 5 次、以及结束那次，避免一下午的断网
+  冲掉 40 条环形缓冲），状态经 `ssh_workspace_status` 的 `reconnecting` 字段与面板卡片暴露；
+  `POST /hosts/reconnect` 跳过等待立即尝试。
+
+**连接与转发的方向性是单向的**，且两个方向都有测试守着：
+
+- 连接断 → 转发断（显式拆除，不依赖 ssh2 的 `close` 事件；主动断开走
+  `savedForwards.closeAlias`，连接意外掉线才走 `ForwardManager.closeForAlias`）；
+- 转发断 → 连接**不**断（`#teardown` 只递减 `holds`，构造上无法关闭 client）；
+- 开转发时主机未连接 → 先连接（`open()` 首步 `engine.acquire()`）。
 
 原始 ssh2 / SFTP 失败会被映射为稳定的 `FsError` 错误码
 （`ENOENT` / `EACCES` / `EIO` 等），消费方只按码分支，不解析报错文本。
@@ -320,24 +472,33 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   `priority: -100` 遮蔽原生 `directoryFlow` 双入口）与远端目录对话框；
 - 工作区标记是 **DOM 装饰**：不删改 React 节点，隐藏原生文件夹图标、
   插入自有 `svg[data-sshwsp-mark]`，MutationObserver 自愈重扫；
-- 与宿主通信走 22 条路由（前缀 `/api/dsh-ssh-workspace/`）：
+- 与宿主通信走 25 条路由（前缀 `/api/dsh-ssh-workspace/`）：
   `hosts`、`hosts/save`、`hosts/delete`、`hosts/forget-key`、
-  `hosts/disconnect`、`test`、`ls`、`status`、`mount`、`unmount`、`enable`、
-  `forward`、`unforward`、`forward/save`、`forward/toggle`、`forward/delete`、
-  `forward/remember`、`forward/probe`、`forward/settings`、`transfer`、
-  `download`、`upload`。
+  `hosts/disconnect`、`hosts/reconnect`、`test`、`ls`、`status`、`mount`、
+  `unmount`、`enable`、`forward`、`unforward`、`forward/save`、
+  `forward/toggle`、`forward/delete`、`forward/remember`、`forward/probe`、
+  `forward/settings`、`transfer`、`download`、`upload`、`self-check`、
+  `support-bundle`。
   路由只服务**回环请求**：除 `remoteAddress`
   回环外，还要求 `Host` 头精确为本机监听端口的 `localhost` / `127.0.0.1` /
   `[::1]` 三种拼写之一，否则 403——仅凭回环地址挡不住 DNS rebinding（页面
   可把自己的域名解析到 127.0.0.1 从而同源访问），Host 校验把这条路堵死；
   反向代理 / 自定义域名访问会被一并拒绝（预期行为）。
 - POST 路由（`hosts/save`、`hosts/delete`、`hosts/forget-key`、
-  `hosts/disconnect`、`test`、`mount`、`unmount`、`enable`、转发六条、
-  `transfer`）额外要求
+  `hosts/disconnect`、`hosts/reconnect`、`test`、`mount`、`unmount`、`enable`、
+  转发七条、`transfer`）额外要求
   `content-type: application/json`，否则 415：
   跨站 HTML 表单只能发 `text/plain` / `urlencoded` / `multipart`，且
   `text/plain` 可伪造出合法 JSON 体，靠内容类型就能把整类跨站写请求挡在
   门外（浏览器半边始终携带该头，不受影响）。
+  `upload` 是唯一例外：它按 `application/octet-stream` 接收原始字节，因此另行
+  自行施加回环与 `Host` 双重校验（`download` / `upload` 都不走 `guard`）。
+  同一条写路径还有第二个门 `upload-chunk`：它走普通 JSON（因此走 `guard`），
+  文件以 base64 分片到达、按 `uploadId` 派生暂存名、末片 rename 发布。存在的原因
+  是**打包成桌面应用后 `dsh-app://` 承载不了 Blob 请求体**——在那里 `upload`
+  的请求在网络层就失败（`net::ERR_UNEXPECTED`），handler 根本没跑过；JSON 请求
+  却能穿过同一层，所以分片版才是桌面里真正可用的那条路。客户端按
+  `location.protocol` 二选一。
 - **停用围栏**横跨所有缝：`engine.disabledWorkspaces` 是唯一真相，
   `ctx.fs`、内建 fs 桥、`ctx.shell`、`ctx.subprocess`、终端接管层与
   `transfer` / `download` / `upload` 在建立连接之前统一拒绝。

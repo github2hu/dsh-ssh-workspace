@@ -20,6 +20,7 @@
  */
 
 import path from 'node:path'
+import { removeScratch, resolveScratchDir } from './scratch.mjs'
 
 const alias = process.env.DSH_WS_TEST_ALIAS
 if (!alias) {
@@ -32,7 +33,17 @@ if (process.env.DSH_CORE_ROOT !== undefined && process.env.DSH_CORE_ROOT !== '')
   process.env.DSH_PEER_ROOT = [process.env.DSH_CORE_ROOT, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 }
 
-const sandbox = process.env.DSH_WS_TEST_DIR ?? '/tmp/dsh-ssh-workspace-test'
+// Validated before anything is created: a value that cannot be proven to name
+// a scratch directory is refused, so the cleanup below can never widen into an
+// `rm -rf` of something the suite did not make.
+const scratch = resolveScratchDir(process.env, '/tmp/dsh-ssh-workspace-test')
+if (!scratch.ok) {
+  console.log('\n=== live smoke ===\n')
+  console.log(`  SKIP  refusing to run: ${scratch.reason}`)
+  console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===\n')
+  process.exit(0)
+}
+const sandbox = scratch.path
 
 const failures = []
 const passes = []
@@ -102,7 +113,7 @@ const target = (p) => ({ targetKey: formatRemotePath(alias, p), displayPath: for
 try {
   // Prepare a scratch directory through the engine's own exec (proves exec too).
   console.log('\n[exec]')
-  const prepared = await engine.exec(alias, `rm -rf ${sandbox} && mkdir -p ${sandbox}/sub && echo READY`)
+  const prepared = await engine.exec(alias, `rm -rf -- ${shellQuote(sandbox)} && mkdir -p ${shellQuote(`${sandbox}/sub`)} && echo READY`)
   check('remote exec runs a command', prepared.success && prepared.stdout.includes('READY'), JSON.stringify(prepared))
   check('remote exec reports an exit code', prepared.exitCode === 0, String(prepared.exitCode))
 
@@ -234,15 +245,49 @@ try {
 
   // --- the write fence -----------------------------------------------------
   console.log('\n[write fence]')
+  // `FS_OUTSIDE_WORKSPACE`, not `FS_SANDBOX_DENIED`: see remote-fs.js. A sandbox
+  // denial is rewritten by the host's tool layer into a mode marker plus an
+  // escalation hint, and escalating a permission never mounts a directory.
+  // `/etc` rather than `/tmp`: the host temp area is reachable on purpose (the
+  // local `writableRoots` lists `/tmp`), so `/tmp` no longer reads as "outside
+  // every root". The fence is lexical and answers before any SFTP work.
   let fenceCode
   try {
-    await router.writeText(target('/tmp/dsh-ssh-workspace-outside.txt'), 'nope', undefined, undefined, undefined)
+    await router.writeText(target('/etc/dsh-ssh-workspace-outside.txt'), 'nope', undefined, undefined, undefined)
   } catch (error) {
     fenceCode = error.code
   }
-  check('writing outside every mounted root is refused', fenceCode === 'FS_SANDBOX_DENIED', String(fenceCode))
+  check('writing outside every mounted root is refused', fenceCode === 'FS_OUTSIDE_WORKSPACE', String(fenceCode))
   const stillReadable = await router.stat(target('/tmp'), undefined)
   check('reads outside the fence remain available', stillReadable?.type === 'directory', JSON.stringify(stillReadable))
+  // The temp area is the one place outside a mounted root a write may land, so
+  // a build that stages there behaves exactly as its local twin does.
+  await router.writeText(target('/tmp/dsh-ssh-workspace-staged.txt'), 'staged\n', undefined, undefined, undefined)
+  check('writing to the host temp area is allowed',
+    (await router.readText(target('/tmp/dsh-ssh-workspace-staged.txt'), undefined)) === 'staged\n')
+  await engine.exec(alias, 'rm -f /tmp/dsh-ssh-workspace-staged.txt')
+
+  // --- the sandbox mode on a real remote target ----------------------------
+  console.log('\n[sandbox mode]')
+  let readOnlyDenied
+  try {
+    await router.writeText(target(`${sandbox}/mode-fence.txt`), 'nope', undefined, undefined, { mode: 'read-only' })
+  } catch (error) {
+    readOnlyDenied = error
+  }
+  check('read-only refuses a remote write inside a mounted root',
+    readOnlyDenied?.code === 'FS_SANDBOX_DENIED', String(readOnlyDenied?.code))
+  check('the refusal names the mode', /read-only/u.test(readOnlyDenied?.message ?? ''), String(readOnlyDenied?.message))
+  let editDenied
+  try {
+    await router.editText(target(`${sandbox}/mode-fence.txt`), { oldString: 'nope', newString: 'x' }, undefined, undefined, { mode: 'read-only' })
+  } catch (error) {
+    editDenied = error
+  }
+  check('editText takes the policy as its fifth argument',
+    editDenied?.code === 'FS_SANDBOX_DENIED', String(editDenied?.code))
+  const modeWritten = await router.writeText(target(`${sandbox}/mode-fence.txt`), 'ok\n', undefined, undefined, { mode: 'workspace-write' })
+  check('workspace-write writes inside a mounted root', modeWritten?.operation !== undefined, JSON.stringify(modeWritten))
 
   // --- errors --------------------------------------------------------------
   console.log('\n[error taxonomy]')
@@ -270,13 +315,49 @@ try {
   }
   check('reading a directory is FS_NOT_REGULAR_FILE', notRegular === 'FS_NOT_REGULAR_FILE', String(notRegular))
 
-  let watchUnsupported = false
-  try {
-    await router.watch(target(filePath), () => {}, new AbortController().signal)
-  } catch {
-    watchUnsupported = true
+  // --- change watching -----------------------------------------------------
+  // This assertion used to read "watch on a remote target rejects", written
+  // before the backend could watch at all (fc90b48, 0.1.23). The watcher
+  // shipped 11 commits later (b6d3f3a) and the assertion was never revisited,
+  // so for seven months the suite asserted the OPPOSITE of the contract and
+  // only ever passed by failing. It now asserts the contract: the watch opens,
+  // reports a change made on the host, and closes cleanly.
+  console.log('\n[watch]')
+  {
+    const controller = new AbortController()
+    let changes = 0
+    let watchError
+    const close = await router.watch(
+      target(`${sandbox}/watched.txt`),
+      (error) => { if (error === undefined) changes += 1; else watchError = error },
+      controller.signal,
+    ).catch(error => { watchError = error; return undefined })
+    check('watch on a remote target opens', typeof close === 'function', String(close))
+    if (typeof close === 'function') {
+      // Create the file AFTER the baselines are taken, so the notification can
+      // only come from the host change — not from the initial snapshot.
+      await engine.exec(alias, `rm -f ${shellQuote(`${sandbox}/watched.txt`)}`)
+      await engine.exec(alias, `printf 'a\\n' > ${shellQuote(`${sandbox}/watched.txt`)}`)
+      // The poll floor is 2s; allow three polls before calling it missed. A
+      // push watcher (inotifywait hosts) answers far sooner, so this bound is
+      // the slow path's, not the fast path's.
+      const deadline = Date.now() + 9000
+      while (changes === 0 && watchError === undefined && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+      check('watch reports a change made on the host', changes > 0, `changes=${changes} error=${watchError?.message ?? 'none'}`)
+      check('watch does not report a failure', watchError === undefined, String(watchError?.message))
+      await close()
+      // Closing must be real: a watcher that keeps polling holds a connection
+      // and a timer for the life of the process.
+      await engine.exec(alias, `printf 'b\\n' >> ${shellQuote(`${sandbox}/watched.txt`)}`)
+      await new Promise(resolve => setTimeout(resolve, 2500))
+      const afterClose = changes
+      await new Promise(resolve => setTimeout(resolve, 3000))
+      check('a closed watch stops reporting', changes === afterClose, `${afterClose} -> ${changes}`)
+      await engine.exec(alias, `rm -f ${shellQuote(`${sandbox}/watched.txt`)}`)
+    }
   }
-  check('watch on a remote target rejects', watchUnsupported)
 
   // --- atomic publication leaves no litter --------------------------------
   console.log('\n[atomic publication]')
@@ -297,10 +378,8 @@ try {
   failures.push(`unexpected exception: ${error?.stack ?? error}`)
   console.error('\nUNEXPECTED EXCEPTION\n', error)
 } finally {
-  try {
-    await engine.exec(alias, `rm -rf ${sandbox}`)
-    console.log('\ncleaned up the remote scratch directory')
-  } catch { /* best effort */ }
+  const removed = await removeScratch(engine, alias, sandbox)
+  console.log(removed.ok ? '\ncleaned up the remote scratch directory' : '\nrefused to clean up: ' + removed.reason)
   engine.dispose()
 }
 

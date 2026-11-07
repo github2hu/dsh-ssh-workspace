@@ -140,9 +140,50 @@ settings.autoStart（UI 写入，运行时真相）
 
 ---
 
-## 六、连接断开之后
+## 六、连接与转发：两条方向都必须是单向的
 
-连接一断，`ForwardManager` 整批拆除（`#teardownWhere(entry => entry.record === record)`）。此时会出现「意图开、实际关」。
+转发与连接的关系在两个方向上都必须是**单向**的，这是本节的验收口径：
+
+| 方向 | 规则 | 实现 |
+| --- | --- | --- |
+| 连接断 → 转发断 | **必须** | 主动断开走 `SavedForwardManager.closeAlias(alias)`，由 `hosts/disconnect` 路由在 `engine.forget()` 之前调用；连接意外掉线由 `ForwardManager` 自拆 |
+| 转发断 → 连接断 | **绝不** | `#teardown` 只递减 `record.holds`，从不触碰 `client` |
+
+### 连接断 → 转发断
+
+连接自身会发 `close` 事件，`ForwardManager` 也订阅了它。但那**不是一条可靠的路径**：
+
+- ssh2 的 client 被 `destroy()` 而不发事件时，事件不会到达；
+- 连接被替换（重连、配置变更）时，旧记录上的监听器可能已无人持有；
+- 测试替身通常根本不实现事件。
+
+所以 `hosts/disconnect` 路由**先**按 alias 显式拆掉转发，再 `engine.forget()`：
+
+```js
+// 有已存映射：逐条 closeById，与端口行「断开」同一条路径
+const closedForwards = savedForwards?.closeAlias?.(alias) ?? 0
+// 未装配 SavedForwardManager：回退到旧路径（那时没有「意图」可关）
+if (!savedForwards) forwards?.closeForAlias?.(alias, 'SSH connection closed')
+engine.forget(alias)
+```
+
+返回值里的 `closedForwards` 让调用方能验证「断开确实带走了隧道」，而不是只能相信它发生了。
+
+### 转发断 → 连接断
+
+反向不成立，而且是**构造上**不成立：`#teardown` 只做三件事——关闭 listener、销毁 socket、递减 `record.holds`。它没有任何路径可以关闭 `client`。
+
+这一条有测试守着，因为两个动作碰的是同一条 record，未来一次「顺手复用」的重构就可能把方向接反，而那种错误是静默的：关掉一个隧道会连带掐断整台主机的连接。
+
+### 转发开启 → 连接建立
+
+第三条相关规则：**开转发时若该主机未连接，就先连接**。`open()` 的第一步就是 `await this.engine.acquire(target)`，`acquire` 在池里没有可用记录时自行拨号。所以「开端口」本身就是一次连接动作。
+
+对应的反向仍然成立：`close()` 不调用 `acquire`。
+
+### 连接断开之后的留痕
+
+连接一断，`ForwardManager` 整批拆除（`#teardownWhere(entry => entry.record === record)`），`closeForAlias` 是同一件事的显式版本。此时会出现「意图开、实际关」。
 
 `ForwardManager` 新增 `onClosed` 回调，由 `SavedForwardManager.noteClosed()` 消费，把原因记进 `failures`。
 
@@ -150,9 +191,25 @@ settings.autoStart（UI 写入，运行时真相）
 
 | 原因 | 是否留痕 | 为什么 |
 | --- | --- | --- |
-| `SSH connection closed` | ✅ | 用户没主动关，需要解释 |
+| `SSH connection closed` | ✅ | 连接意外掉线，用户没主动关，需要解释 |
 | `plugin unloaded` | ✅ | 插件重载，重启后会按意图恢复 |
-| 用户主动关闭 | ❌ | 用户知道自己做了什么，不需要「错误」提示 |
+| 用户主动关闭（`closed by caller`） | ❌ | 用户知道自己做了什么，不需要「错误」提示 |
+
+### 主动断开主机 ≠ 连接掉线
+
+同一个「隧道没了」，两种成因必须落在**同一种行状态**上的一半，另一种必须分开：
+
+| 触发 | 走的路径 | `enabled` | `failures` | 面板 |
+| --- | --- | --- | --- | --- |
+| 主机面板「断开」 | `SavedForwardManager.closeAlias(alias)` | `false` | 清除 | 已断开 + 开启，无红字 |
+| 端口行「断开」 | `closeById(id)` | `false` | 清除 | 同上 |
+| 连接意外掉线 | `ForwardManager.closeForAlias()` → `onClosed` | `true` | 记录 | 已断开 + 开启 **+ 红字「连接已断开」** |
+
+前两行必须逐字段相同：用户点了「断开」却看到「连接已断开」的红字，等于把一次成功的操作报成故障，还会连带显示「启动时自动开启隧道」的提示——那条提示暗示隧道会在下次启动时自己回来，而用户刚刚明确关掉了它。
+
+路由因此分岔：`hosts/disconnect` 优先走 `savedForwards.closeAlias(alias)`，只有未装配 `SavedForwardManager` 时才回退到 `closeForAlias()`。回退分支保留旧行为不是遗漏——那时没有已存映射的概念，也就没有「意图」可以关。
+
+`closeAlias` 内部逐条调用 `closeById`，而不是自己写一遍关闭逻辑：两条路径若各写一次，就会在某个字段上悄悄分家，而分家的地方恰好是用户能看见的那一行。
 
 自动重连**没有**实现。理由：自动重开会造成「用户以为关了，其实又开了」的意外流量。当前的语义是「显示原因，等用户点开启」，这是可预测的。
 
@@ -196,7 +253,7 @@ settings.autoStart（UI 写入，运行时真相）
 
 ## 八、测试
 
-新增 `tests/forward-persist-smoke.mjs`，88 项断言，覆盖：
+新增 `tests/forward-persist-smoke.mjs`，102 项断言，覆盖：
 
 - store 分区的往返、原地更新、删除、与 `hosts` / `secrets` / 外来分区共存
 - 损坏条目的降级（缺 localPort、端口 0、缺 id 都丢弃，不抛错）
@@ -205,10 +262,11 @@ settings.autoStart（UI 写入，运行时真相）
 - **占用端口被拒绝且不落盘**；保存后 bind 失败仍留痕
 - 自动开启：偏好关闭时不动、只开意图为开的、幂等、失败不抛错
 - 连接断开：标记非 live、保留意图、留下原因、重开清除原因
+- **主动断开主机与端口行「断开」逐字段一致**（`live` / `enabled` / `error` 三元组相同，见 §六）
 - `remember` 保留实际端口、不产生重复行
 - join 的意图/事实分离
 
-另有 `tests/forward-smoke.mjs`（21 项，既有）覆盖隧道本身。
+另有 `tests/forward-smoke.mjs`（34 项，既有）覆盖隧道本身。
 
 ---
 

@@ -82,6 +82,11 @@ module.exports = { FsError, FsTargetKey, FsVersion, FileSystem, __dshStub: true 
   // definition's shape and freezes it. Returning the definition unchanged keeps
   // the plugin's own registration path exercised without re-implementing the
   // host's validation.
+  //
+  // `__dshStub` is not decoration. The detector (tests/support/peer-mode.mjs)
+  // reads it to decide whether a suite may claim the host's behaviour, and a
+  // stub that forgot to mark itself would be reported as REAL — the one failure
+  // mode that makes a stub *worse* than nothing.
   const toolsDir = path.join(root, '@deepseek-ai', 'dsh-tools')
   writePackage(toolsDir, '@deepseek-ai/dsh-tools')
   writeCjs(path.join(toolsDir, 'index.cjs'), `
@@ -91,7 +96,31 @@ function defineTool (definition) {
   if (typeof definition.execute !== 'function') throw new Error('defineTool: execute must be a function')
   return definition
 }
-module.exports = { defineTool }
+module.exports = { defineTool, __dshStub: true }
+`)
+
+  // --- @deepseek-ai/cordis ------------------------------------------------
+  //
+  // Present so the root is uniformly stubbed: every host peer the plugin
+  // declares resolves here, and each one says so. Leaving it out made the
+  // detector report "cordis=absent, dsh-tools=real" for the same generated root,
+  // which reads like a half-installed tree rather than a deliberate stand-in.
+  //
+  // Both exports throw on use, like the ssh2 stub: the suites that need real
+  // Cordis are testing service ordering and cannot be satisfied by a stand-in,
+  // so the honest failure is a loud one at the call site.
+  const cordisDir = path.join(root, '@deepseek-ai', 'cordis')
+  writePackage(cordisDir, '@deepseek-ai/cordis')
+  writeCjs(path.join(cordisDir, 'index.cjs'), `
+const refusal = (what) => { throw new Error('cordis stub: ' + what + ' needs the real @deepseek-ai/cordis; point DSH_CORE_ROOT at an assembled DSH tree') }
+class Context { constructor () { refusal('new Context()') } }
+class Service { constructor () { refusal('new Service()') } }
+module.exports = {
+  Context,
+  Service,
+  Fiber: class Fiber {},
+  __dshStub: true
+}
 `)
 
   // --- ssh2 ---------------------------------------------------------------

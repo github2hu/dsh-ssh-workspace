@@ -1,5 +1,5 @@
 <div align="center">
-<img src="./docs/assets/header.png" alt="dsh-ssh-workspace header" width="840" />
+<img src="https://raw.githubusercontent.com/siqyka/dsh-ssh-workspace/main/docs/assets/header.png" alt="dsh-ssh-workspace header" width="840" />
 
 # dsh-ssh-workspace
 
@@ -14,7 +14,7 @@
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D%200.2.0--rc.1-blue)
 ![ssh2](https://img.shields.io/badge/ssh2-%5E1.17.0-lightgrey)
 
-**简体中文** · [English](./README.en.md)
+**简体中文** · [English](https://github.com/siqyka/dsh-ssh-workspace/blob/main/README.en.md)
 
 </div>
 
@@ -210,6 +210,15 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
   `branch -D`、`update-ref`、`reflog expire`、`gc --prune`、`filter-branch` 等。
   侧栏按钮没有确认框，一键改写历史的风险不值得承担——需要时请在远端终端
   （侧栏终端或 `ssh_workspace_shell`）里执行。
+### 从源码仓库使用
+
+```bash
+git clone https://github.com/siqyka/dsh-ssh-workspace.git
+cd dsh-ssh-workspace
+npm ci          # ssh2 是直接依赖，不随 clone 到位
+```
+
+装完重启客户端即可。
 
 ## 主机管理
 
@@ -224,7 +233,7 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 且不会回传到浏览器，编辑时留空表示保持原值。
 删除主机不会自动卸载已挂载的工作区，但那些工作区会因主机不存在而无法访问。
 
-> 存储格式、`~/.ssh/config` 解析规则与凭据策略细节见 [docs/hosts.md](./docs/hosts.md)。
+> 存储格式、`~/.ssh/config` 解析规则与凭据策略细节见 [docs/hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md)。
 
 ## 配置
 
@@ -232,12 +241,36 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
 | `announceToAgent` | `false` | 是否向每个 agent 注入能力说明（系统提示词段落） |
+| `allowLan` | `false` | 局域网部署：浏览器的 HTTP 路由接受私网来源地址（IPv4 RFC1918、IPv6 ULA/链路本地） |
+| `allowedHosts` | `[]` | 额外放行的 `Host` 值（配合 `allowLan`，如面板经局域网主机名访问时） |
 | `engine.idleTimeoutMs` | `1800000` | 连接空闲超过该时长后回收（毫秒） |
 | `engine.connectTimeoutMs` | `15000` | 单次 SSH 连接握手超时（毫秒） |
 | `engine.keepaliveIntervalMs` | `15000` | keepalive 心跳间隔（毫秒） |
 | `engine.sweepIntervalMs` | `60000` | 空闲连接的扫描周期（毫秒） |
+| `engine.reconnect` | 见下 | 断线后的后台重连策略；传 `false` 退回「只在操作时重连一次」 |
+| `engine.reconnect.baseDelayMs` | `1000` | 首次重试的等待（毫秒），之后按 2 的幂增长 |
+| `engine.reconnect.maxDelayMs` | `60000` | 单次等待的上限（毫秒） |
+| `engine.reconnect.maxAttempts` | `0` | 最多尝试次数；`0` 表示不限次数 |
+| `engine.reconnect.jitter` | `0.2` | 向下抖动的比例，用来避免多主机同时重连；不会超过上限 |
 
-> `engine` 下四项均为可选（非法值回落默认），通常无需配置。
+> `engine` 下各项均为可选（非法值回落默认），通常无需配置。
+
+### 局域网部署（`allowLan`）
+
+默认只接受**本机回环**访问（`127.0.0.1` / `::1` / `localhost`）。webserver 绑定
+`0.0.0.0`、浏览器从局域网另一台机器访问时，请求会被 `forbidden: loopback-only`
+拒绝——这是防 DNS-rebinding 的围栏，不是故障。设 `allowLan: true` 后：
+
+- 来源地址放宽到**私网地址**（IPv4 `10/8`、`172.16/12`、`192.168/16`；IPv6 ULA
+  `fc00::/7` 与链路本地 `fe80::/10`），公网地址仍被拒绝；
+- `Host` 头必须命名**本机真实监听地址**（由本机各网卡地址 + 端口拼出，回环拼写
+  始终有效），不匹配的 Host 仍以 `forbidden: unexpected Host header …` 拒绝——
+  防 rebinding 语义原样保留；
+- 若面板经一个本机网卡不知道的名字访问（局域网主机名、反代拼写），把它加进
+  `allowedHosts`（大小写与首尾空白不敏感，可带端口也可不带）；
+- POST 的 JSON content-type 校验、405/415 等其余防护不变。
+
+安全语义的完整说明见 [SECURITY.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/SECURITY.md)。
 
 ## Agent 工具
 
@@ -245,7 +278,7 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | --- | --- |
 | `ssh_workspace_hosts` | 列出可用主机（store + `~/.ssh/config` 候选） |
 | `ssh_workspace_mount` | 把一个远端目录登记为工作区，返回 `ssh://` 路径 |
-| `ssh_workspace_unmount` | 停用远端工作区（保留记录与会话，会话归档，可逆） |
+| `ssh_workspace_unmount` | 停用远端工作区（默认保留记录与会话，可逆；勾选「同时删除记录」才归档会话并删除记录） |
 | `ssh_workspace_enable` | 重新挂载被停用的工作区并取消归档其会话 |
 | `ssh_workspace_status` | 当前挂载 / 停用列表、连接、转发与持久会话状态 |
 | `ssh_workspace_exec` | **在远端**执行 shell 命令（可 `run_in_background`） |
@@ -254,9 +287,11 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | `ssh_workspace_forward` | 把远端端口映射到本机，返回可打开的 URL |
 | `ssh_workspace_unforward` | 关闭端口映射并释放本地端口 |
 
-> 工具的参数、返回字段与错误语义详见 [docs/tools.md](./docs/tools.md)。
+> 工具的参数、返回字段与错误语义详见 [docs/tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md)。
 
 ## 能力一览
+
+> 完整的按域清单（含依赖、降级与边界）见 [docs/features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md)。
 
 ### 远端文件
 
@@ -266,9 +301,9 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | 原子写入 | 先落同目录暂存文件再替换；优先 `posix-rename@openssh.com`，服务器不支持时退化为「先删后改名」（此时不再原子） |
 | 换行符保真 | 编辑 CRLF 文件不会把它改成 LF |
 | 二进制与编码 | 文本读取拒绝 NUL / 非法 UTF-8；`readBytes` 原样返回字节 |
-| 写入围栏 | 远端写入只允许落在已挂载的远端工作区内，越界返回 `FS_SANDBOX_DENIED`；读取不受限制 |
+| 写入围栏 | 远端写入只允许落在已挂载的远端工作区内，越界返回 `FS_OUTSIDE_WORKSPACE`；**「仅可查看」模式同样会挡住远端写入**（`FS_SANDBOX_DENIED`）。读取不受限制 |
 | 大文件流式读取 | 预览与 `read` 按块（256 KiB）流式读取，不再整文件进内存 |
-| 远端变更自动刷新 | 侧栏文件树与预览以轮询感知远端改动并自动刷新——基础约 2 秒一次，空闲目录自适应退避（连续 15 轮无变更退至 5 秒、30 轮至 10 秒封顶），任一变更立即回到 2 秒；SFTP 元数据无亚秒时间戳，同一秒内等长的连续改写可能不触发刷新，增、删、改名总能感知 |
+| 远端变更自动刷新 | 优先用远端 `inotifywait` 推送事件（即时、不受 mtime 精度限制）；未安装时回退到轮询——基础约 2 秒一次，空闲目录自适应退避（连续 15 轮无变更退至 5 秒、30 轮至 10 秒封顶），任一变更立即回到 2 秒；轮询路径下 SFTP 元数据无亚秒时间戳，同一秒内等长的连续改写可能不触发刷新，增、删、改名总能感知 |
 
 ### 远端执行
 
@@ -289,7 +324,9 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | 拖拽 / 右键把文件加入任务 | 文件树的文件与文件夹可**直接拖到聊天输入框**（悬停显示虚线高亮，松开插入引用 chip），或**右键「添加到任务」**——与 `@` 补全选中效果完全一致 |
 | 「添加工作区」远程入口 | 「添加工作区」按钮替换为锚定菜单：「新建本地工作区」（DSH 原生选择器）或「新建远程工作区」（选主机 → 逐级浏览远端目录 → 确认挂载；目录不可写时警告并拒绝创建） |
 | 远程工作区专用标记 | 本插件创建的远程工作区在侧栏行、工作区选择器与会话页工作区按钮处显示远端标记图标，而不是普通文件夹图标 |
-| 主机管理面板 | 添加 / 编辑 / 删除主机（私钥路径、认证方式、备注等），改动立即生效并丢弃该别名旧连接；`~/.ssh/config` 主机只读展示；「测试连接」结果以顶部 toast 弹出，数秒自动消失（点击可提前关闭）；「已连接」状态内联在主机名后，连接可按需断开 |
+| 主机管理面板 | 添加 / 编辑 / 删除主机（私钥路径、认证方式、备注等），改动立即生效并丢弃该别名旧连接；`~/.ssh/config` 主机只读展示；「测试连接」只探测可达性（连上即释放，不会留下连接），结果以顶部 toast 弹出，数秒自动消失（点击可提前关闭）；「已连接」状态内联在主机名后，断开时连带拆除该主机的端口转发 |
+| 浏览目录对话框 | 主机卡片的「浏览目录」逐级浏览远端目录、一次选择多个文件上传到当前目录、逐行下载文件，并可就地「挂载此目录」；对话框里有传输队列，逐项显示百分比或字节并可单独取消 |
+| 文件面板 / 上传 / 下载 | 上传入口是「浏览目录」对话框（可一次选多个）与文件树行右键菜单「上传文件到此目录」（仅远端行）；「工作区文件」面板头部只留一个「传输」按钮（**仅当面板显示的是 `ssh://` 远程工作区时出现**；本地目录沿用宿主自己的头部；在远端列表里它不随队列清空而隐藏），进行中带角标，点开是进度浮层（逐项进度、速度与进度条、取消、清除已完成）。右侧文件树本身仍是宿主组件，没有多选 |
 
 ### 连接模型
 
@@ -338,21 +375,33 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
 
 | 文档 | 内容 |
 | --- | --- |
-| [architecture.md](./docs/architecture.md) | 架构与实现：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 |
-| [protocol.md](./docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI |
-| [hosts.md](./docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
-| [tools.md](./docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
-| [ui.md](./docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记 |
-| [development.md](./docs/development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 |
-| [troubleshooting.md](./docs/troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 |
-| [roadmap.md](./docs/roadmap.md) | 功能路线图：候选功能、动机与验收 |
-| [CHANGELOG.md](./CHANGELOG.md) | 更新日志：各版本的新增、修复与变更 |
+| [features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md) | **功能说明**：按能力域列出的完整功能清单（工作区 / 文件 / 执行 / 传输 / 转发 / 界面 / 安全 / 配置 / 降级矩阵 / 边界） |
+| [architecture.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/architecture.md) | 架构与实现：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 |
+| [protocol.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 |
+| [hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
+| [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
+| [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 |
+| [forward-persistence.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/forward-persistence.md) | 端口转发持久化：意图与事实的分离、两条断开路径的一致性、自动开启 |
+| [unmount-modes.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/unmount-modes.md) | 卸载的两种模式：`detach`（可逆）与 `deregister`、会话归档、停用围栏 |
+| [trigger-gates.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/trigger-gates.md) | **触发门禁的一行指令**：四道围栏各自该怎么撞、撞出什么错误码，以及怎么用远端实际状态反证 |
+| [acceptance-prompts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/acceptance-prompts.md) | **验收 Prompt**：权限围栏三项决定的逐条验收脚本（操作 → 必须看到的结果 → 判据），可直接粘给远端会话执行 |
+| [development.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 |
+| [upstream-workarounds.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/upstream-workarounds.md) | 上游临时补丁登记：宿主缺陷、一行修法、自动退役信号与删除步骤 |
+| [upstream-workaround-pattern.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/upstream-workaround-pattern.md) | **上游补丁的退役模式**：可复用的方法——适用判定、七件套、三态探测、可达的信号通道、反模式与成本边界 |
+| [troubleshooting.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 |
+| [optimization-and-future.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/optimization-and-future.md) | **优化项与 Future（第一辑）**：首次全量审阅的 16 项优化（每项附推进结果与反向验证）、明确不做的事与 9 个能力方向 |
+| [optimization-and-future02.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/optimization-and-future02.md) | **优化项与 Future（第二辑 · 2026-11-04 复审）**：O-17 / O-18 两个新问题、对 O-11 / O-12 / O-13 的更正、F-10 / F-11 与可复现实测记录 |
+| [CONTRIBUTING.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/CONTRIBUTING.md) | 参与开发：环境、三种测试、代码约定、改完之后 |
+| [SECURITY.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/SECURITY.md) | 安全策略：凭据如何存储、主机密钥校验、已知边界、漏洞报告 |
+| [CHANGELOG.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/CHANGELOG.md) | 更新日志：各版本的新增、修复与变更 |
 
 ---
 
+## 许可证
+
 <div align="center">
 
-**[MIT](./LICENSE) © 2026 siqyka**
+**[MIT](https://github.com/siqyka/dsh-ssh-workspace/blob/main/LICENSE) © 2026 siqyka**
 
 <sub>用 SSH 的距离，换来本地的手感。</sub>
 

@@ -27,10 +27,13 @@ jobs:
       - name: Install
         run: npm ci --ignore-scripts
       - name: Syntax-check every module
-        run: |
-          for f in lib/*.js; do node --check "$f"; done
+        run: npm run lint
       - name: Smoke tests
-        run: node tests/run.mjs
+        run: npm test
+      # The README that ships in the tarball links into the repo by absolute URL;
+      # a broken one is visible on npm the moment this publish lands.
+      - name: Check documentation links and anchors
+        run: npm run check:docs
       # A tag that disagrees with package.json would publish the wrong version.
       - name: Tag must match package.json
         run: |

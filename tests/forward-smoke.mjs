@@ -42,7 +42,7 @@ function check (label, ok, detail) {
  */
 function fakeEngine (farSidePort) {
   const handlers = new Map()
-  const state = { holds: 0, forwardOutCalls: [] }
+  const state = { holds: 0, forwardOutCalls: [], acquireCalls: 0 }
   const client = {
     // A minimal EventEmitter: the manager subscribes to 'close'.
     once (event, handler) { handlers.set(event, handler) },
@@ -60,7 +60,7 @@ function fakeEngine (farSidePort) {
     state,
     record,
     engine: {
-      async acquire () { return record },
+      async acquire () { state.acquireCalls += 1; return record },
     },
   }
 }
@@ -143,6 +143,36 @@ try {
     forwards.dispose()
   }
 
+  // --- opening a forward connects an idle host -----------------------------
+  //
+  // Requirement: "opening a port connects if the SSH host is not connected".
+  // The manager must reach for the connection itself rather than assuming one
+  // exists — asserted through `acquire`, which is the only way a real engine
+  // establishes one.
+  {
+    const { engine, state } = fakeEngine(echo.port)
+    const forwards = new ForwardManager({ engine })
+    check('no connection was taken before the forward', state.acquireCalls === 0, String(state.acquireCalls))
+    const opened = await forwards.open('theta', { remotePort: echo.port, localPort: 0 })
+    check('opening a forward acquires a connection', state.acquireCalls === 1, String(state.acquireCalls))
+    check('opening a forward on an idle host succeeds', opened.state === 'open', JSON.stringify(opened))
+    forwards.dispose()
+  }
+
+  // --- closing a forward does not close the host ---------------------------
+  //
+  // The other direction of the same requirement: a tunnel going away is not a
+  // reason to drop the connection, so closing must never reach for it.
+  {
+    const { engine, state } = fakeEngine(echo.port)
+    const forwards = new ForwardManager({ engine })
+    const opened = await forwards.open('iota', { remotePort: echo.port, localPort: 0 })
+    const afterOpen = state.acquireCalls
+    forwards.close(opened.id)
+    check('closing a forward does not acquire or drop a connection', state.acquireCalls === afterOpen, String(state.acquireCalls))
+    forwards.dispose()
+  }
+
   // --- close releases the local port --------------------------------------
   {
     const { engine, state, record } = fakeEngine(echo.port)
@@ -180,6 +210,46 @@ try {
       socket.once('connect', () => { socket.destroy(); resolve(false) })
       socket.once('error', () => resolve(true))
     }) === true)
+    forwards.dispose()
+  }
+
+  // --- closeForAlias tears down exactly one host's tunnels -----------------
+  //
+  // The disconnect route calls this so dropping a host takes its forwards with
+  // it. Asserted per-alias rather than globally: another host's tunnels must
+  // survive, or disconnecting one machine would silently break another's.
+  {
+    const { engine, state, record } = fakeEngine(echo.port)
+    const forwards = new ForwardManager({ engine })
+    // Two DIFFERENT targets: repeating one target is deliberately a reuse, so
+    // the same remote port would only ever produce one entry.
+    await forwards.open('kappa', { remotePort: echo.port, localPort: 0 })
+    await forwards.open('kappa', { remotePort: echo.port + 1, localPort: 0 })
+    check('two distinct targets produced two forwards', forwards.list().length === 2, String(forwards.list().length))
+    const closed = forwards.closeForAlias('kappa', 'SSH connection closed')
+    check('closeForAlias reports how many it closed', closed === 2, String(closed))
+    check('closeForAlias removed them from the list', forwards.list().length === 0, String(forwards.list().length))
+    check('closeForAlias released every hold', record.holds === 0, String(record.holds))
+    check('closeForAlias on an unknown alias closes nothing', forwards.closeForAlias('nobody') === 0)
+    forwards.dispose()
+  }
+
+  // --- closeForAlias leaves other hosts alone ------------------------------
+  {
+    // Two aliases, two records: the manager must pick by alias, not by record.
+    const { engine: engineA, record: recordA } = fakeEngine(echo.port)
+    const { engine: engineB, record: recordB } = fakeEngine(echo.port)
+    const records = { alpha: recordA, beta: recordB }
+    const engine = { async acquire (alias) { return records[alias] } }
+    const forwards = new ForwardManager({ engine })
+    await forwards.open('alpha', { remotePort: echo.port, localPort: 0 })
+    await forwards.open('beta', { remotePort: echo.port, localPort: 0 })
+    const closed = forwards.closeForAlias('alpha')
+    check('closeForAlias closes only the named host', closed === 1, String(closed))
+    check('the other host keeps its forward', forwards.list().length === 1 && forwards.list()[0].alias === 'beta',
+      JSON.stringify(forwards.list()))
+    check('the other host keeps its hold', recordB.holds === 1, String(recordB.holds))
+    check('the named host released its hold', recordA.holds === 0, String(recordA.holds))
     forwards.dispose()
   }
 

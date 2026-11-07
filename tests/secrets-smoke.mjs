@@ -29,8 +29,10 @@ const read = () => readFileSync(storeFile, 'utf8')
 const parsed = () => JSON.parse(read())
 
 let failures = 0
+let passes = 0
 function check (label, ok, detail) {
   if (ok) {
+    passes += 1
     console.log(`  PASS  ${label}`)
   } else {
     failures += 1
@@ -131,10 +133,14 @@ try {
   writeFileSync(sshConfig, 'Host fromconfig\n  HostName 10.0.0.9\n  User deploy\n  Password mine\n', 'utf8')
   check('ssh-config plaintext keeps working', new HostStore(sshConfig, store).resolve('fromconfig').auth.password === 'mine')
   check('ssh-config is never rewritten as ciphertext', readFileSync(sshConfig, 'utf8').includes('Password mine'))
-  check('the key file is only created on demand', existsSync(keyPath()))
+  // The key file outlives every edit and the ssh-config fallback: only the
+  // deletion of the last secret would let it go. It is named for that claim,
+  // not repeated from the "on demand" assertion at the top — a duplicate label
+  // makes two opposite conditions look like one passing test.
+  check('the key file survives edits and the ssh-config fallback', existsSync(keyPath()))
 } finally {
   rmSync(home, { recursive: true, force: true })
 }
 
-console.log(`\n=== ${failures === 0 ? 'all checks passed' : `${failures} failed`} ===`)
+console.log(`\n=== ${passes} passed, ${failures} failed ===`)
 process.exit(failures === 0 ? 0 : 1)

@@ -1,6 +1,6 @@
 {
   "name": "@github2hu/dsh-ssh-workspace",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "Remote SSH workspaces for DSH: mount a directory on an SSH host as a DSH workspace with browser UI sidebar panel, plus remote-workspace skills and run_code support",
   "type": "module",
   "repository": {
@@ -15,6 +15,13 @@
     "node": ">=20"
   },
   "main": "lib/index.js",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "lint": "node scripts/lint.mjs",
+    "check:docs": "node scripts/check-doc-links.mjs && node scripts/doc-numbers.mjs --check",
+    "check": "npm run lint && npm run check:docs && npm test && npm pack --dry-run",
+    "doc-numbers": "node scripts/doc-numbers.mjs"
+  },
   "exports": {
     ".": {
       "default": "./lib/index.js"
@@ -28,9 +35,6 @@
     "./package.json": "./package.json"
   },
   "dsh": {
-    "engines": {
-      "dsh": ">=0.2.0-rc.1"
-    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
@@ -51,13 +55,28 @@
     "@deepseek-ai/dsh-fs": "*",
     "@deepseek-ai/dsh-tools": "*"
   },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    },
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-fs": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "ssh2": "^1.17.0"
   },
   "files": [
     "lib/",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "license": "MIT",
   "keywords": [

@@ -22,7 +22,6 @@ if (alias === undefined) {
   process.exit(2)
 }
 const remoteDir = (process.argv[3] ?? '/tmp').replace(/\/+$/u, '')
-const pluginRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..')
 const dshHome = process.env.DSH_HOME ?? path.join(homedir(), '.dsh')
 const store = JSON.parse(readFileSync(path.join(dshHome, 'dsh-ssh.json'), 'utf8'))
 const hosts = Array.isArray(store.hosts) ? store.hosts : Object.values(store.hosts ?? {})
@@ -44,11 +43,6 @@ if (auth.kind === 'key') {
 } else if (auth.kind === 'password') {
   config.password = secret.password ?? auth.password
 }
-
-// The plugin's own SFTP primitives, loaded without the DSH seam by stubbing
-// the one module-level import they pull in.
-const remoteFs = await import(pathToFileURL(path.join(pluginRoot, 'lib/remote-fs.js')).href)
-  .catch(() => null)
 
 const client = new Client()
 const ready = new Promise((resolve, reject) => {

@@ -34,8 +34,14 @@ if (!coreRoot) {
   process.exit(0)
 }
 // Booting a real Cordis application needs the host's own framework; a generated
-// stub root cannot stand in for it.
-skipWithoutRealPeers('boot smoke', 'a real assembled DSH tree (@deepseek-ai/cordis, dsh-fs and dsh-tools)')
+// stub root cannot stand in for it. The package list is stated here rather than
+// detected ad hoc: the check further down used to look only for whether
+// `dsh-tools` loaded, and reported a tree where the package RESOLVED but one of
+// its transitive peers was missing as "not in the core tree" — pointing the
+// reader at an install that would change nothing.
+skipWithoutRealPeers('boot smoke', 'a real assembled DSH tree (@deepseek-ai/cordis, dsh-fs and dsh-tools)', {
+  requires: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-fs', '@deepseek-ai/dsh-tools'],
+})
 process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -61,13 +67,6 @@ console.log(`[plugin: ${pluginRoot}]`)
 const requireFromCore = createRequire(path.join(coreRoot, 'noop.cjs'))
 const { Context, Service } = requireFromCore('@deepseek-ai/cordis')
 const { FileSystem } = requireFromCore('@deepseek-ai/dsh-fs')
-try {
-  requireFromCore('@deepseek-ai/dsh-tools')
-} catch {
-  console.log('  SKIP  @deepseek-ai/dsh-tools is not in the core tree; skipping the boot suite')
-  console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
-  process.exit(0)
-}
 
 /** A faithful stand-in for the deployment's local sandboxed filesystem. */
 class StubLocalFileSystem extends FileSystem {
@@ -181,6 +180,7 @@ const expectedTools = [
   'ssh_workspace_shell',
   'ssh_workspace_forward',
   'ssh_workspace_unforward',
+  'ssh_workspace_reverse_forward',
 ]
 for (const name of expectedTools) {
   check(`tool ${name} is registered`, registry.registered.has(name))
